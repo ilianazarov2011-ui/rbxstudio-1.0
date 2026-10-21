@@ -2,6 +2,7 @@ package ai.venice.rbxstudio
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.opengl.EGL14
 import android.opengl.EGLConfig
@@ -180,6 +181,7 @@ private fun App() {
 
 @Composable
 private fun LaunchScreen() {
+    val ctx = LocalContext.current
     var pressed by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
@@ -193,11 +195,17 @@ private fun LaunchScreen() {
                 .clip(RoundedCornerShape(14.dp))
                 .background(if (pressed) Color(0xFF0E3A44) else Color(0xFF16232B))
                 .border(1.dp, Color(0xFF00E5FF), RoundedCornerShape(14.dp))
-                .clickable { pressed = !pressed },
+                .clickable {
+                    runCatching {
+                        val cls = Class.forName("com.winlator.MainActivity")
+                        ctx.startActivity(Intent(ctx, cls))
+                    }
+                    pressed = !pressed
+                },
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                if (pressed) "ЗАПУСКАЮ..." else "ЗАПУСТИТЬ ROBLOX STUDIO",
+                if (pressed) "ЗАПУСКАЮ..." else "ОТКРЫТЬ ДВИЖОК",
                 color = Color(0xFF00E5FF),
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
@@ -208,16 +216,16 @@ private fun LaunchScreen() {
         Text("СОСТОЯНИЕ", color = Color(0xFF6B7683), fontSize = 11.sp)
         Spacer(Modifier.height(8.dp))
 
-        StepRow("Wine рантайм", false)
-        StepRow("Box64 (x86 -> ARM)", false)
-        StepRow("DXVK (Direct3D -> Vulkan)", false)
-        StepRow("Префикс со Studio", false)
-        StepRow("Вход в аккаунт", false)
+        StepRow("Движок Wine", true)
+        StepRow("Box64 (x86 -> ARM)", true)
+        StepRow("DXVK (Direct3D -> Vulkan)", true)
+        StepRow("Интерфейс управления", true)
+        StepRow("Автоустановка Studio", false)
 
         Spacer(Modifier.height(18.dp))
         Text(
-            "Сейчас кнопка ничего не запускает - Wine ещё не подключён. " +
-                "Следующий шаг как раз это.",
+            "Кнопка открывает движок Winlator. Там создай контейнер " +
+                "и запускай Studio. Следующий шаг - автоматизировать это.",
             color = Color(0xFF8A97A5),
             fontSize = 12.sp,
         )
