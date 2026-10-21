@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -65,6 +66,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -105,7 +107,22 @@ private fun RbxTheme(content: @Composable () -> Unit) {
 private fun App() {
     val ctx = LocalContext.current
     var tab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Пуск", "Диагностика", "Пресеты", "Сессия", "Лог")
+    val tabs = listOf("Пуск", "Диагностика", "Пресеты", "Сессия", "Настройки", "Лог")
+
+    val state = remember { OverlayState() }
+    val file = remember { File(ctx.filesDir, "overlay.json") }
+    var layout by remember {
+        mutableStateOf(
+            runCatching { json.decodeFromString(OverlayLayout.serializer(), file.readText()) }
+                .getOrDefault(OverlayLayout()),
+        )
+    }
+
+    LaunchedEffect(layout) {
+        withContext(Dispatchers.IO) {
+            runCatching { file.writeText(json.encodeToString(OverlayLayout.serializer(), layout)) }
+        }
+    }
 
     val crashText = remember {
         runCatching {
@@ -141,7 +158,7 @@ private fun App() {
                         Text(
                             title,
                             color = if (on) Color(0xFF00E5FF) else Color(0xFF6B7683),
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
                         )
                     }
@@ -151,7 +168,8 @@ private fun App() {
                 0 -> LaunchScreen()
                 1 -> DiagnosticsScreen()
                 2 -> PresetsScreen()
-                3 -> SessionScreen()
+                3 -> SessionScreen(layout, { layout = it }, state)
+                4 -> SettingsScreen(layout, { layout = it })
                 else -> LogScreen()
             }
         }
@@ -218,6 +236,113 @@ private fun StepRow(name: String, done: Boolean) {
         )
         Spacer(Modifier.size(10.dp))
         Text(name, color = Color(0xFFC8D2DC), fontSize = 13.sp)
+    }
+}
+
+// ---------- НАСТРОЙКИ ----------
+
+@Composable
+private fun SettingsScreen(layout: OverlayLayout, onLayout: (OverlayLayout) -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
+
+        Text("КНОПКИ", color = Color(0xFF6B7683), fontSize = 11.sp)
+        SettingSlider(
+            "Размер кнопок", layout.buttonScale, 0.6f, 1.8f,
+            { (it * 100).toInt().toString() + "%" },
+        ) { onLayout(layout.copy(buttonScale = it)) }
+        SettingSlider(
+            "Непрозрачность кнопок", layout.buttonAlpha, 0.15f, 1f,
+            { (it * 100).toInt().toString() + "%" },
+        ) { onLayout(layout.copy(buttonAlpha = it)) }
+
+        Spacer(Modifier.height(14.dp))
+        Text("УПРАВЛЕНИЕ", color = Color(0xFF6B7683), fontSize = 11.sp)
+        SettingSlider(
+            "Скорость курсора", layout.cursorSpeed, 0.4f, 2.5f,
+            { String.format("%.2f", it) },
+        ) { onLayout(layout.copy(cursorSpeed = it)) }
+        SettingSlider(
+            "Ширина зоны курсора", layout.padZoneWidth, 0.20f, 0.50f,
+            { (it * 100).toInt().toString() + "%" },
+        ) { onLayout(layout.copy(padZoneWidth = it)) }
+        SettingSlider(
+            "Размер джойстика", layout.joystickRadius, 0.10f, 0.26f,
+            { (it * 100).toInt().toString() + "%" },
+        ) { onLayout(layout.copy(joystickRadius = it)) }
+        SettingToggle("Смещать курсор выше пальца", layout.offsetCursor) {
+            onLayout(layout.copy(offsetCursor = it))
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Text("ПРИЦЕЛ", color = Color(0xFF6B7683), fontSize = 11.sp)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Chip(if (layout.cursorMode == 0) "[ Всегда ]" else "Всегда") {
+                onLayout(layout.copy(cursorMode = 0))
+            }
+            Chip(if (layout.cursorMode == 1) "[ При касании ]" else "При касании") {
+                onLayout(layout.copy(cursorMode = 1))
+            }
+            Chip(if (layout.cursorMode == 2) "[ Скрыт ]" else "Скрыт") {
+                onLayout(layout.copy(cursorMode = 2))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        SettingSlider(
+            "Радиус лупы", layout.loupeRadius, 50f, 130f,
+            { it.toInt().toString() },
+        ) { onLayout(layout.copy(loupeRadius = it)) }
+        SettingToggle("Лупа", layout.loupeEnabled) { onLayout(layout.copy(loupeEnabled = it)) }
+
+        Spacer(Modifier.height(18.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Chip("Сбросить настройки") {
+                onLayout(OverlayLayout(buttons = layout.buttons))
+            }
+            Chip("Сбросить раскладку") {
+                onLayout(layout.copy(buttons = defaultButtons()))
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun SettingSlider(
+    label: String,
+    value: Float,
+    min: Float,
+    max: Float,
+    fmt: (Float) -> String,
+    onChange: (Float) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Row(Modifier.fillMaxWidth()) {
+            Text(label, color = Color(0xFFC8D2DC), fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Text(fmt(value), color = Color(0xFF00E5FF), fontSize = 12.sp)
+        }
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            valueRange = min..max,
+            modifier = Modifier.height(34.dp),
+        )
+    }
+}
+
+@Composable
+private fun SettingToggle(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 8.dp).clickable { onChange(!value) },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = Color(0xFFC8D2DC), fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Text(
+            if (value) "ВКЛ" else "ВЫКЛ",
+            color = if (value) Color(0xFF4CD964) else Color(0xFF6B7683),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 
@@ -702,6 +827,11 @@ data class OverlayLayout(
     val cursorSpeed: Float = 1.0f,
     val offsetCursor: Boolean = true,
     val loupeEnabled: Boolean = true,
+    val loupeRadius: Float = 78f,
+    val joystickRadius: Float = 0.17f,
+    val buttonScale: Float = 1.0f,
+    val buttonAlpha: Float = 0.47f,
+    val cursorMode: Int = 1,
     val buttons: List<OverlayButton> = defaultButtons(),
 )
 
@@ -724,8 +854,9 @@ enum class Latch { OFF, ONCE, LOCKED }
 
 class OverlayState {
     var cursor by mutableStateOf(Offset.Zero)
+    var cursorVisible by mutableStateOf(true)
+    var cursorTouchAt by mutableStateOf(0L)
     var editMode by mutableStateOf(false)
-    var loupeOn by mutableStateOf(true)
     var fineAim by mutableStateOf(false)
     var cameraActive by mutableStateOf(false)
     var lastEvent by mutableStateOf("")
@@ -804,11 +935,19 @@ private fun TouchOverlay(
         val h = constraints.maxHeight.toFloat()
         val padEdge = w * layout.padZoneWidth
         val offsetY = if (layout.offsetCursor) 52f else 0f
-        val joyR = minOf(w, h) * 0.17f
+        val joyR = minOf(w, h) * layout.joystickRadius
 
         LaunchedEffect(w, h) {
             if (state.cursor == Offset.Zero) {
                 state.cursor = Offset(w * 0.5f, h * 0.5f)
+            }
+        }
+
+        LaunchedEffect(state.cursorTouchAt) {
+            if (layout.cursorMode == 1 && state.cursorTouchAt > 0L) {
+                state.cursorVisible = true
+                delay(1500)
+                state.cursorVisible = false
             }
         }
 
@@ -855,6 +994,8 @@ private fun TouchOverlay(
                                     }
                                     if (role == Role.PAD) {
                                         state.cursor = pos.copy(y = pos.y - offsetY)
+                                        state.cursorVisible = true
+                                        state.cursorTouchAt = System.currentTimeMillis()
                                     }
                                     if (role == Role.JOY) {
                                         state.joyBase = pos
@@ -878,6 +1019,7 @@ private fun TouchOverlay(
                                             (state.cursor.x + d.x * speed).coerceIn(0f, w),
                                             (state.cursor.y + d.y * speed).coerceIn(0f, h),
                                         )
+                                        state.cursorTouchAt = System.currentTimeMillis()
                                         lastPos[ch.id] = pos
 
                                         val held = System.currentTimeMillis() -
@@ -941,6 +1083,10 @@ private fun TouchOverlay(
                                     lastTapPos = ch.position
                                 }
 
+                                if (role == Role.PAD) {
+                                    state.cursorTouchAt = System.currentTimeMillis()
+                                }
+
                                 if (role == Role.JOY) {
                                     for (k in heldKeys.toList()) {
                                         sink.key(k, false)
@@ -977,6 +1123,7 @@ private fun TouchOverlay(
                 OverlayButtonView(
                     btn = btn,
                     state = state,
+                    layout = layout,
                     containerW = w,
                     containerH = h,
                     sink = sink,
@@ -1009,13 +1156,6 @@ private fun TouchOverlay(
                 fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp),
             )
-            Text(
-                if (play) "левая зона - ходьба, правая - обзор"
-                else "левая зона - курсор, правая - камера",
-                color = Color(0x33FFFFFF),
-                fontSize = 10.sp,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 6.dp),
-            )
         }
     }
 }
@@ -1024,6 +1164,7 @@ private fun TouchOverlay(
 private fun OverlayButtonView(
     btn: OverlayButton,
     state: OverlayState,
+    layout: OverlayLayout,
     containerW: Float,
     containerH: Float,
     sink: InputSink,
@@ -1031,7 +1172,7 @@ private fun OverlayButtonView(
 ) {
     val density = LocalDensity.current
     val base = minOf(containerW, containerH)
-    val sizeDp = with(density) { (base * btn.size).toDp() }
+    val sizeDp = with(density) { (base * btn.size * layout.buttonScale).toDp() }
     val baseX = with(density) { (containerW * btn.x).toDp() }
     val baseY = with(density) { (containerH * btn.y).toDp() }
 
@@ -1058,7 +1199,7 @@ private fun OverlayButtonView(
                 when {
                     latch == Latch.LOCKED -> Color(0xCC00E5FF)
                     latch == Latch.ONCE -> Color(0x99FFB300)
-                    else -> Color(0x77000000)
+                    else -> Color(0xFF000000).copy(alpha = layout.buttonAlpha)
                 },
             )
             .border(1.dp, Color(0x66FFFFFF), CircleShape)
@@ -1130,14 +1271,21 @@ private fun CursorLayer(state: OverlayState, layout: OverlayLayout, padEdge: Flo
             return@Canvas
         }
 
+        val showCursor = when (layout.cursorMode) {
+            0 -> true
+            2 -> false
+            else -> state.cursorVisible
+        }
+        if (!showCursor) return@Canvas
+
         val c = state.cursor
         drawCircle(Color(0x6600E5FF), radius = 30f, center = c, style = Stroke(2f))
         drawCircle(Color(0xAA00E5FF), radius = 3f, center = c)
         drawLine(Color(0xCC00E5FF), c - Offset(16f, 0f), c + Offset(16f, 0f), 2f)
         drawLine(Color(0xCC00E5FF), c - Offset(0f, 16f), c + Offset(0f, 16f), 2f)
 
-        if (state.loupeOn && layout.loupeEnabled) {
-            val r = 78f
+        if (layout.loupeEnabled) {
+            val r = layout.loupeRadius
             val center = Offset(c.x, (c.y - r - 24f).coerceAtLeast(r + 4f))
             drawCircle(Color(0xCC000000), r, center)
             drawCircle(Color(0x6600E5FF), r, center, style = Stroke(2f))
@@ -1152,30 +1300,19 @@ private fun CursorLayer(state: OverlayState, layout: OverlayLayout, padEdge: Flo
 private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
 
 @Composable
-private fun SessionScreen() {
-    val ctx = LocalContext.current
-    val state = remember { OverlayState() }
+private fun SessionScreen(
+    layout: OverlayLayout,
+    onLayoutChange: (OverlayLayout) -> Unit,
+    state: OverlayState,
+) {
     val sink = remember { LogInputSink(state) }
-    val file = remember { File(ctx.filesDir, "overlay.json") }
-    var layout by remember {
-        mutableStateOf(
-            runCatching { json.decodeFromString(OverlayLayout.serializer(), file.readText()) }
-                .getOrDefault(OverlayLayout()),
-        )
-    }
-
-    LaunchedEffect(layout) {
-        withContext(Dispatchers.IO) {
-            runCatching { file.writeText(json.encodeToString(OverlayLayout.serializer(), layout)) }
-        }
-    }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF0A0C0F))) {
         TouchOverlay(
             layout = layout,
             sink = sink,
             state = state,
-            onLayoutChange = { layout = it },
+            onLayoutChange = onLayoutChange,
         )
 
         Row(
@@ -1189,9 +1326,10 @@ private fun SessionScreen() {
                 state.walkLatch = !state.walkLatch
             }
             Chip(if (state.editMode) "Готово" else "Раскладка") { state.editMode = !state.editMode }
-            Chip(if (state.loupeOn) "Лупа вкл" else "Лупа выкл") { state.loupeOn = !state.loupeOn }
+            Chip(if (layout.loupeEnabled) "Лупа вкл" else "Лупа выкл") {
+                onLayoutChange(layout.copy(loupeEnabled = !layout.loupeEnabled))
+            }
             Chip(if (state.fineAim) "Точно" else "Быстро") { state.fineAim = !state.fineAim }
-            Chip("Сброс") { layout = layout.copy(buttons = defaultButtons()) }
         }
     }
 }
