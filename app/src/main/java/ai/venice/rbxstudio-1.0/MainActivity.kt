@@ -1,1357 +1,231 @@
 package ai.venice.rbxstudio
 
-import android.app.ActivityManager
+import android.Manifest
+import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.Typeface
 import android.opengl.EGL14
-import android.opengl.EGLConfig
 import android.opengl.GLES20
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.StatFs
-import android.view.WindowManager
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.PointerId
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import android.util.Log
+import android.util.TypedValue
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
 import java.io.File
+import java.util.Date
 
-class MainActivity : ComponentActivity() {
+class MainActivity : Activity() {
+
+    private lateinit var logView: TextView
+    private lateinit var statusView: TextView
+    private val ui = Handler(Looper.getMainLooper())
+    private var busy = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        installCrashHandler()
+        setContentView(buildUi())
+        Engine.log("=== PortBox запущен, ${Date()} ===")
+        Engine.dumpApi()
 
-        val crashFile = File(filesDir, "crash.txt")
-        val prev = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { t, e ->
-            runCatching {
-                crashFile.writeText("ПОТОК: " + t.name + "\n\n" + e.stackTraceToString())
-            }
-            prev?.uncaughtException(t, e)
+        val crash = File(filesDir, "crash.txt")
+        if (crash.exists()) {
+            Engine.log("--- прошлое падение ---")
+            Engine.log(crash.readText())
+            crash.delete()
         }
-
-        setContent { RbxTheme { App() } }
-    }
-}
-
-@Composable
-private fun RbxTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Color(0xFF00E5FF),
-            background = Color(0xFF0A0C0F),
-            surface = Color(0xFF12161B),
-        ),
-        content = content,
-    )
-}
-
-@Composable
-private fun App() {
-    val ctx = LocalContext.current
-    var tab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Пуск", "Диагностика", "Пресеты", "Сессия", "Настройки", "Лог")
-
-    val state = remember { OverlayState() }
-    val file = remember { File(ctx.filesDir, "overlay.json") }
-    var layout by remember {
-        mutableStateOf(
-            runCatching { json.decodeFromString(OverlayLayout.serializer(), file.readText()) }
-                .getOrDefault(OverlayLayout()),
-        )
+        if (Build.VERSION.SDK_INT >= 23 &&
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            try { requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 100) } catch (_: Throwable) {}
+        }
+        refreshLog()
     }
 
-    LaunchedEffect(layout) {
-        withContext(Dispatchers.IO) {
-            runCatching { file.writeText(json.encodeToString(OverlayLayout.serializer(), layout)) }
+    // ---------------------------------------------------------------- интерфейс
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun buildUi(): View {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(12))
         }
+        root.addView(TextView(this).apply {
+            text = "PortBox — Roblox Studio на телефоне"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            setTypeface(typeface, Typeface.BOLD)
+        })
+        statusView = TextView(this).apply {
+            text = "готов"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(Color.GRAY)
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        root.addView(statusView)
+
+        root.addView(button("ЗАПУСТИТЬ СТУДИЮ") { startStudio() })
+        root.addView(button("Меню движка") { Engine.openEngineUi(this) })
+        root.addView(button("Скачать Студию заново") { downloadOnly() })
+        root.addView(button("Диагностика") { diagnostics() })
+        root.addView(button("Скопировать лог") { copyLog() })
+        root.addView(button("Очистить лог") { Engine.clearLog(); refreshLog() })
+
+        logView = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+        }
+        val scroll = ScrollView(this).apply {
+            addView(logView)
+            setPadding(0, dp(8), 0, 0)
+        }
+        root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        return root
     }
 
-    val crashText = remember {
-        runCatching {
-            File(ctx.filesDir, "crash.txt").takeIf { it.exists() }?.readText()
-        }.getOrNull()
+    private fun button(text: String, action: () -> Unit): Button =
+        Button(this).apply {
+            this.text = text
+            isAllCaps = false
+            setOnClickListener { action() }
+        }
+
+    private fun status(s: String) { statusView.text = s }
+
+    private fun refreshLog() { logView.text = Engine.logText() }
+
+    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+    private fun copyLog() {
+        try {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("log", Engine.logText()))
+            toast("Лог скопирован — вставь его в чат")
+        } catch (e: Throwable) { toast("Не скопировалось") }
     }
 
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxSize()) {
-
-            if (!crashText.isNullOrBlank()) {
-                Text(
-                    "БЫЛО ПАДЕНИЕ - открой вкладку Лог",
-                    color = Color(0xFFFF8A80),
-                    fontSize = 11.sp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF3A1010))
-                        .padding(5.dp),
-                )
-            }
-
-            Row(
-                Modifier.fillMaxWidth().height(38.dp).background(Color(0xFF12161B)),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                tabs.forEachIndexed { i, title ->
-                    val on = i == tab
-                    Box(
-                        Modifier.weight(1f).fillMaxSize().clickable { tab = i },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            title,
-                            color = if (on) Color(0xFF00E5FF) else Color(0xFF6B7683),
-                            fontSize = 11.sp,
-                            fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
-                        )
-                    }
-                }
-            }
-            when (tab) {
-                0 -> LaunchScreen()
-                1 -> DiagnosticsScreen()
-                2 -> PresetsScreen()
-                3 -> SessionScreen(layout, { layout = it }, state)
-                4 -> SettingsScreen(layout, { layout = it })
-                else -> LogScreen()
-            }
-        }
-    }
-}
-
-// ---------- ПУСК ----------
-
-@Composable
-private fun LaunchScreen() {
-    val ctx = LocalContext.current
-    var pressed by remember { mutableStateOf(false) }
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-        Text("ЗАПУСК", color = Color(0xFF6B7683), fontSize = 11.sp)
-        Spacer(Modifier.height(12.dp))
-
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(76.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(if (pressed) Color(0xFF0E3A44) else Color(0xFF16232B))
-                .border(1.dp, Color(0xFF00E5FF), RoundedCornerShape(14.dp))
-                .clickable {
-                    runCatching {
-                        val cls = Class.forName("com.winlator.MainActivity")
-                        ctx.startActivity(Intent(ctx, cls))
-                    }
-                    pressed = !pressed
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                if (pressed) "ЗАПУСКАЮ..." else "ОТКРЫТЬ ДВИЖОК",
-                color = Color(0xFF00E5FF),
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-            )
-        }
-
-        Spacer(Modifier.height(18.dp))
-        Text("СОСТОЯНИЕ", color = Color(0xFF6B7683), fontSize = 11.sp)
-        Spacer(Modifier.height(8.dp))
-
-        StepRow("Движок Wine", true)
-        StepRow("Box64 (x86 -> ARM)", true)
-        StepRow("DXVK (Direct3D -> Vulkan)", true)
-        StepRow("Интерфейс управления", true)
-        StepRow("Автоустановка Studio", false)
-
-        Spacer(Modifier.height(18.dp))
-        Text(
-            "Кнопка открывает движок Winlator. Там создай контейнер " +
-                "и запускай Studio. Следующий шаг - автоматизировать это.",
-            color = Color(0xFF8A97A5),
-            fontSize = 12.sp,
-        )
-        Spacer(Modifier.height(24.dp))
-    }
-}
-
-@Composable
-private fun StepRow(name: String, done: Boolean) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier
-                .size(16.dp)
-                .clip(CircleShape)
-                .background(if (done) Color(0xFF4CD964) else Color(0xFF2A323A)),
-        )
-        Spacer(Modifier.size(10.dp))
-        Text(name, color = Color(0xFFC8D2DC), fontSize = 13.sp)
-    }
-}
-
-// ---------- НАСТРОЙКИ ----------
-
-@Composable
-private fun SettingsScreen(layout: OverlayLayout, onLayout: (OverlayLayout) -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
-
-        Text("КНОПКИ", color = Color(0xFF6B7683), fontSize = 11.sp)
-        SettingSlider(
-            "Размер кнопок", layout.buttonScale, 0.6f, 1.8f,
-            { (it * 100).toInt().toString() + "%" },
-        ) { onLayout(layout.copy(buttonScale = it)) }
-        SettingSlider(
-            "Непрозрачность кнопок", layout.buttonAlpha, 0.15f, 1f,
-            { (it * 100).toInt().toString() + "%" },
-        ) { onLayout(layout.copy(buttonAlpha = it)) }
-
-        Spacer(Modifier.height(14.dp))
-        Text("УПРАВЛЕНИЕ", color = Color(0xFF6B7683), fontSize = 11.sp)
-        SettingSlider(
-            "Скорость курсора", layout.cursorSpeed, 0.4f, 2.5f,
-            { String.format("%.2f", it) },
-        ) { onLayout(layout.copy(cursorSpeed = it)) }
-        SettingSlider(
-            "Ширина зоны курсора", layout.padZoneWidth, 0.20f, 0.50f,
-            { (it * 100).toInt().toString() + "%" },
-        ) { onLayout(layout.copy(padZoneWidth = it)) }
-        SettingSlider(
-            "Размер джойстика", layout.joystickRadius, 0.10f, 0.26f,
-            { (it * 100).toInt().toString() + "%" },
-        ) { onLayout(layout.copy(joystickRadius = it)) }
-        SettingToggle("Смещать курсор выше пальца", layout.offsetCursor) {
-            onLayout(layout.copy(offsetCursor = it))
-        }
-
-        Spacer(Modifier.height(14.dp))
-        Text("ПРИЦЕЛ", color = Color(0xFF6B7683), fontSize = 11.sp)
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Chip(if (layout.cursorMode == 0) "[ Всегда ]" else "Всегда") {
-                onLayout(layout.copy(cursorMode = 0))
-            }
-            Chip(if (layout.cursorMode == 1) "[ При касании ]" else "При касании") {
-                onLayout(layout.copy(cursorMode = 1))
-            }
-            Chip(if (layout.cursorMode == 2) "[ Скрыт ]" else "Скрыт") {
-                onLayout(layout.copy(cursorMode = 2))
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        SettingSlider(
-            "Радиус лупы", layout.loupeRadius, 50f, 130f,
-            { it.toInt().toString() },
-        ) { onLayout(layout.copy(loupeRadius = it)) }
-        SettingToggle("Лупа", layout.loupeEnabled) { onLayout(layout.copy(loupeEnabled = it)) }
-
-        Spacer(Modifier.height(18.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Chip("Сбросить настройки") {
-                onLayout(OverlayLayout(buttons = layout.buttons))
-            }
-            Chip("Сбросить раскладку") {
-                onLayout(layout.copy(buttons = defaultButtons()))
-            }
-        }
-        Spacer(Modifier.height(24.dp))
-    }
-}
-
-@Composable
-private fun SettingSlider(
-    label: String,
-    value: Float,
-    min: Float,
-    max: Float,
-    fmt: (Float) -> String,
-    onChange: (Float) -> Unit,
-) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Row(Modifier.fillMaxWidth()) {
-            Text(label, color = Color(0xFFC8D2DC), fontSize = 13.sp, modifier = Modifier.weight(1f))
-            Text(fmt(value), color = Color(0xFF00E5FF), fontSize = 12.sp)
-        }
-        Slider(
-            value = value,
-            onValueChange = onChange,
-            valueRange = min..max,
-            modifier = Modifier.height(34.dp),
-        )
-    }
-}
-
-@Composable
-private fun SettingToggle(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 8.dp).clickable { onChange(!value) },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, color = Color(0xFFC8D2DC), fontSize = 13.sp, modifier = Modifier.weight(1f))
-        Text(
-            if (value) "ВКЛ" else "ВЫКЛ",
-            color = if (value) Color(0xFF4CD964) else Color(0xFF6B7683),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-// ---------- ЛОГ ----------
-
-@Composable
-private fun LogScreen() {
-    val ctx = LocalContext.current
-    var text by remember { mutableStateOf("") }
-    var tick by remember { mutableIntStateOf(0) }
-
-    LaunchedEffect(tick) {
-        val f = File(ctx.filesDir, "crash.txt")
-        text = withContext(Dispatchers.IO) {
-            if (f.exists()) f.readText() else "Падений не было."
-        }
+    private fun runBg(what: String, body: () -> Unit) {
+        if (busy) { toast("Занят, подожди"); return }
+        busy = true
+        status("$what...")
+        Thread {
+            try { body() } catch (e: Throwable) { Engine.log("!! $what: $e") }
+            ui.post { busy = false; status("готово"); refreshLog() }
+        }.start()
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp),
-    ) {
-        Text("ЛОГ ПАДЕНИЙ", color = Color(0xFF6B7683), fontSize = 11.sp)
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Chip("Обновить") { tick++ }
-            Chip("Очистить") {
-                runCatching { File(ctx.filesDir, "crash.txt").delete() }
-                tick++
-            }
+    // ---------------------------------------------------------------- действия
+
+    private fun startStudio() = runBg("Запуск Студии") {
+        val cm = Engine.manager(this) ?: run {
+            Engine.log("! движок не найден, открываю меню движка")
+            ui.post { Engine.openEngineUi(this) }
+            return@runBg
         }
-        Spacer(Modifier.height(10.dp))
-        Text(text, color = Color(0xFFE6EDF3), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-        Spacer(Modifier.height(24.dp))
-    }
-}
+        val container = Engine.ensureStudioContainer(this, cm) ?: return@runBg
+        val id = Engine.containerId(container)
+        val dir = Engine.containerDir(this, cm, id)
 
-// ---------- ДИАГНОСТИКА ----------
-
-enum class Verdict { GREEN, YELLOW, RED }
-
-data class DeviceReport(
-    val androidRelease: String,
-    val sdkInt: Int,
-    val soc: String,
-    val abis: String,
-    val cpuCores: Int,
-    val ramTotalMb: Long,
-    val storageFreeMb: Long,
-    val gpuRenderer: String,
-    val vulkanVersion: String?,
-    val adreno: Boolean,
-    val score: Int,
-    val verdict: Verdict,
-    val notes: List<String>,
-)
-
-object DeviceProbe {
-
-    fun probe(ctx: Context): DeviceReport {
-        val notes = ArrayList<String>()
-        val vulkan = vulkanInfo(ctx)
-        val renderer = glRenderer()
-        val adreno = renderer.contains("Adreno", ignoreCase = true)
-        val ramMb = totalRamMb(ctx)
-        val freeMb = freeStorageMb(ctx)
-
-        var score = 100
-
-        if (vulkan == null) {
-            score -= 45
-            notes += "Vulkan не найден. Без него DXVK не стартует."
-        } else if (vulkan.first < 1 || (vulkan.first == 1 && vulkan.second < 1)) {
-            score -= 30
-            notes += "Vulkan " + vulkan.first + "." + vulkan.second + " - нужен минимум 1.1."
+        val studio = if (dir != null) Engine.findStudioExe(dir) else null
+        if (studio != null && dir != null) {
+            val win = Engine.toWindowsPath(studio, dir)
+            Engine.log("Студия найдена: $win")
+            if (win != null) { ui.post { Engine.launchContainer(this, container, win) }; return@runBg }
         }
 
-        if (!adreno) {
-            score -= 20
-            notes += "GPU не Adreno: драйвер Turnip недоступен, остаётся системный Vulkan."
-        }
-
-        when {
-            ramMb < 4096 -> {
-                score -= 35
-                notes += "Меньше 4 ГБ RAM - Studio будет уходить в своп."
-            }
-            ramMb < 6144 -> {
-                score -= 15
-                notes += "4-6 ГБ RAM. Только лёгкие места и низкие настройки."
-            }
-            ramMb < 8192 -> {
-                score -= 6
-                notes += "6-8 ГБ RAM. Пойдёт, но впритык."
-            }
-        }
-
-        if (freeMb < 6000) {
-            score -= 15
-            notes += "Меньше 6 ГБ свободно. Нужно место под префикс со Studio."
-        }
-
-        if (!Build.SUPPORTED_ABIS.contains("arm64-v8a")) {
-            score -= 30
-            notes += "Нет arm64-v8a - Box64 не запустится."
-        }
-
-        if (notes.isEmpty()) notes += "Проблем не найдено. Можно ставить префикс."
-
-        val finalScore = score.coerceIn(0, 100)
-        return DeviceReport(
-            androidRelease = Build.VERSION.RELEASE,
-            sdkInt = Build.VERSION.SDK_INT,
-            soc = socName(),
-            abis = Build.SUPPORTED_ABIS.joinToString(", "),
-            cpuCores = Runtime.getRuntime().availableProcessors(),
-            ramTotalMb = ramMb,
-            storageFreeMb = freeMb,
-            gpuRenderer = renderer,
-            vulkanVersion = vulkan?.let { it.first.toString() + "." + it.second },
-            adreno = adreno,
-            score = finalScore,
-            verdict = when {
-                finalScore >= 75 -> Verdict.GREEN
-                finalScore >= 45 -> Verdict.YELLOW
-                else -> Verdict.RED
-            },
-            notes = notes,
-        )
+        Engine.log("Студия ещё не установлена — нужен установщик")
+        val guid = Engine.fetchVersionGuid() ?: return@runBg
+        val f = Engine.downloadInstaller(guid) { p -> ui.post { status("Скачано $p%") } } ?: return@runBg
+        ui.post { Engine.launchContainer(this, container, "D:\\" + f.name) }
     }
 
-    private fun vulkanInfo(ctx: Context): Pair<Int, Int>? {
-        var raw = -1
-        for (f in ctx.packageManager.systemAvailableFeatures) {
-            if (f.name == PackageManager.FEATURE_VULKAN_HARDWARE_VERSION) raw = f.version
-        }
-        if (raw < 0) return null
-        return ((raw shr 22) and 0x7F) to ((raw shr 12) and 0x3FF)
+    private fun downloadOnly() = runBg("Скачивание") {
+        val guid = Engine.fetchVersionGuid() ?: return@runBg
+        Engine.downloadInstaller(guid) { p -> ui.post { status("Скачано $p%") } }
     }
 
-    private fun totalRamMb(ctx: Context): Long {
-        val mi = ActivityManager.MemoryInfo()
-        (ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mi)
-        return mi.totalMem / 1024 / 1024
+    private fun diagnostics() {
+        val sb = StringBuilder()
+        sb.appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+        sb.appendLine("Устройство: ${Build.MANUFACTURER} ${Build.MODEL}")
+        sb.appendLine("Плата/SoC: ${Build.HARDWARE}")
+        if (Build.VERSION.SDK_INT >= 31) sb.appendLine("Чип: ${Build.SOC_MODEL}")
+        sb.appendLine("Ядер: ${Runtime.getRuntime().availableProcessors()}")
+        sb.appendLine("ABI: ${Build.SUPPORTED_ABIS.joinToString()}")
+        sb.appendLine("RAM: ${ramGb()} ГБ")
+        sb.appendLine("Свободно: ${freeGb()} ГБ")
+        sb.appendLine("GPU: ${gpuRenderer()}")
+        val score = score()
+        sb.appendLine("Оценка под DXVK: $score / 100")
+        if (score < 60) sb.appendLine("Вывод: будет тяжело, но работать может")
+        Engine.log(sb.toString())
+        refreshLog()
     }
 
-    private fun freeStorageMb(ctx: Context): Long =
-        StatFs(ctx.filesDir.absolutePath).availableBytes / 1024 / 1024
+    private fun ramGb(): String = try {
+        val line = File("/proc/meminfo").readLines().first { it.startsWith("MemTotal") }
+        val kb = line.filter { it.isDigit() }.toLong()
+        String.format("%.1f", kb / 1024.0 / 1024.0)
+    } catch (e: Throwable) { "?" }
 
-    private fun socName(): String {
-        val platform = runCatching {
-            val c = Class.forName("android.os.SystemProperties")
-            val m = c.getMethod("get", String::class.java)
-            (m.invoke(null, "ro.board.platform") as? String).orEmpty()
-        }.getOrDefault("")
-        val model = if (Build.VERSION.SDK_INT >= 31) Build.SOC_MODEL.orEmpty() else ""
-        return listOf(Build.HARDWARE, platform, model)
-            .filter { it.isNotBlank() }
-            .distinct()
-            .joinToString(" / ")
-    }
+    private fun freeGb(): String = try {
+        val st = StatFs(filesDir.absolutePath)
+        String.format("%.1f", st.availableBytes / 1024.0 / 1024.0 / 1024.0)
+    } catch (e: Throwable) { "?" }
 
-    private fun glRenderer(): String = runCatching {
-        val dpy = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+    private fun gpuRenderer(): String = try {
+        val d = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         val ver = IntArray(2)
-        EGL14.eglInitialize(dpy, ver, 0, ver, 1)
-
-        val cfgAttr = intArrayOf(
-            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
-            EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
-            EGL14.EGL_NONE,
+        EGL14.eglInitialize(d, ver, 0, ver, 1)
+        val cfg = arrayOfNulls<android.opengl.EGLConfig>(1)
+        val num = IntArray(1)
+        EGL14.eglChooseConfig(
+            d, intArrayOf(EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT, EGL14.EGL_NONE), 0,
+            cfg, 0, 1, num, 0
         )
-        val cfgs = arrayOfNulls<EGLConfig>(1)
-        val n = IntArray(1)
-        EGL14.eglChooseConfig(dpy, cfgAttr, 0, cfgs, 0, 1, n, 0)
-        val cfg = cfgs[0] ?: return "unknown"
-
         val ctx = EGL14.eglCreateContext(
-            dpy, cfg, EGL14.EGL_NO_CONTEXT,
-            intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0,
+            d, cfg[0], EGL14.EGL_NO_CONTEXT,
+            intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0
         )
         val surf = EGL14.eglCreatePbufferSurface(
-            dpy, cfg, intArrayOf(EGL14.EGL_WIDTH, 4, EGL14.EGL_HEIGHT, 4, EGL14.EGL_NONE), 0,
+            d, cfg[0], intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE), 0
         )
-        EGL14.eglMakeCurrent(dpy, surf, surf, ctx)
-        val r = GLES20.glGetString(GLES20.GL_RENDERER).orEmpty()
+        EGL14.eglMakeCurrent(d, surf, surf, ctx)
+        val s = GLES20.glGetString(GLES20.GL_RENDERER) ?: "?"
+        EGL14.eglTerminate(d)
+        s
+    } catch (e: Throwable) { "не определился" }
 
-        EGL14.eglMakeCurrent(dpy, surf, surf, ctx)
-        EGL14.eglDestroySurface(dpy, surf)
-        EGL14.eglDestroyContext(dpy, ctx)
-        EGL14.eglTerminate(dpy)
-        r
-    }.getOrDefault("unknown")
-}
-
-@Composable
-private fun DiagnosticsScreen() {
-    val ctx = LocalContext.current
-    var report by remember { mutableStateOf<DeviceReport?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(Unit) {
-        val res = runCatching { withContext(Dispatchers.Default) { DeviceProbe.probe(ctx) } }
-        res.onSuccess { report = it }
-        res.onFailure { error = it.stackTraceToString() }
+    private fun score(): Int {
+        var s = 100
+        val ram = ramGb().toDoubleOrNull() ?: 4.0
+        if (ram < 4) s -= 30 else if (ram < 8) s -= 20
+        if (freeGb().toDoubleOrNull()?.let { it < 8 } == true) s -= 20
+        val gpu = gpuRenderer().lowercase()
+        if (!gpu.contains("adreno")) s -= 20
+        if (Runtime.getRuntime().availableProcessors() < 8) s -= 10
+        return s.coerceAtLeast(0)
     }
 
-    val r = report
-    val err = error
-
-    if (r == null) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(14.dp),
-        ) {
-            if (err == null) {
-                Text("Проверяю устройство...", color = Color(0xFF6B7683))
-            } else {
-                Text("ОШИБКА ПРОВЕРКИ", color = Color(0xFFFF453A), fontSize = 13.sp)
-                Spacer(Modifier.height(8.dp))
-                Text(err, color = Color(0xFFE6EDF3), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-            }
-        }
-        return
-    }
-
-    val vc = when (r.verdict) {
-        Verdict.GREEN -> Color(0xFF4CD964)
-        Verdict.YELLOW -> Color(0xFFFFB300)
-        Verdict.RED -> Color(0xFFFF453A)
-    }
-    val vt = when (r.verdict) {
-        Verdict.GREEN -> "ПОТЯНЕТ"
-        Verdict.YELLOW -> "ПОТЯНЕТ, НО С ОГОВОРКАМИ"
-        Verdict.RED -> "БУДЕТ ТЯЖЕЛО"
-    }
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(r.score.toString(), color = vc, fontSize = 40.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.size(12.dp))
-            Text(vt, color = vc, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-        }
-        Spacer(Modifier.height(12.dp))
-
-        InfoRow("Android", r.androidRelease + " (API " + r.sdkInt + ")")
-        InfoRow("SoC", r.soc)
-        InfoRow("Ядра CPU", r.cpuCores.toString())
-        InfoRow("ABI", r.abis)
-        InfoRow("RAM", r.ramTotalMb.toString() + " МБ")
-        InfoRow("Свободно", r.storageFreeMb.toString() + " МБ")
-        InfoRow("GPU", r.gpuRenderer)
-        InfoRow("Vulkan", r.vulkanVersion ?: "не найден")
-        InfoRow("Turnip", if (r.adreno) "доступен (Adreno)" else "недоступен")
-
-        Spacer(Modifier.height(16.dp))
-        Text("ЗАМЕЧАНИЯ", color = Color(0xFF6B7683), fontSize = 11.sp)
-        Spacer(Modifier.height(6.dp))
-        r.notes.forEach {
-            Text(
-                "- " + it,
-                color = Color(0xFFC8D2DC),
-                fontSize = 13.sp,
-                modifier = Modifier.padding(vertical = 3.dp),
-            )
-        }
-        Spacer(Modifier.height(24.dp))
-    }
-}
-
-@Composable
-private fun InfoRow(k: String, v: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-        Text(k, color = Color(0xFF6B7683), fontSize = 13.sp, modifier = Modifier.weight(0.38f))
-        Text(v, color = Color(0xFFE6EDF3), fontSize = 13.sp, modifier = Modifier.weight(0.62f))
-    }
-}
-
-// ---------- ПРЕСЕТЫ ----------
-
-@Serializable
-data class RuntimePreset(
-    val id: String,
-    val name: String,
-    val resScale: Float,
-    val fpsLimit: Int,
-    val box64: Map<String, String>,
-    val dxvk: Map<String, String>,
-    val wine: Map<String, String>,
-) {
-    fun env(): Map<String, String> = box64 + wine
-    fun dxvkConf(): String = dxvk.entries.joinToString("\n") { it.key + " = " + it.value }
-}
-
-object Presets {
-
-    private val baseBox64 = mapOf(
-        "BOX64_DYNAREC_SAFEFLAGS" to "1",
-        "BOX64_DYNAREC_FASTNAN" to "1",
-        "BOX64_DYNAREC_CALLRET" to "1",
-        "BOX64_DYNAREC_WAIT" to "1",
-        "BOX64_LOG" to "0",
-        "BOX64_NOBANNER" to "1",
-    )
-
-    private val baseWine = mapOf(
-        "WINEDEBUG" to "-all",
-        "WINEDLLOVERRIDES" to "mscoree=d;mshtml=d;winemenubuilder.exe=d",
-        "WINEESYNC" to "1",
-        "WINEFSYNC" to "1",
-        "DXVK_ASYNC" to "1",
-    )
-
-    private val baseDxvk = mapOf(
-        "d3d11.maxFeatureLevel" to "11_0",
-        "dxvk.maxFrameLatency" to "1",
-        "dxvk.enableAsync" to "True",
-    )
-
-    val mali = RuntimePreset(
-        "mali", "Mali (твой чип)", 0.5f, 30,
-        baseBox64 + mapOf(
-            "BOX64_DYNAREC_BIGBLOCK" to "1",
-            "BOX64_DYNAREC_FORWARD" to "256",
-            "BOX64_DYNAREC_STRONGMEM" to "1",
-        ),
-        baseDxvk + mapOf(
-            "dxvk.numCompilerThreads" to "1",
-            "dxvk.maxFrameLatency" to "2",
-            "dxvk.enableGraphicsPipelineLibrary" to "False",
-        ),
-        baseWine + mapOf("DXVK_FRAME_RATE" to "30"),
-    )
-
-    val battery = RuntimePreset(
-        "battery", "Батарея", 0.5f, 30,
-        baseBox64 + mapOf(
-            "BOX64_DYNAREC_BIGBLOCK" to "1",
-            "BOX64_DYNAREC_FORWARD" to "256",
-            "BOX64_DYNAREC_STRONGMEM" to "1",
-        ),
-        baseDxvk + mapOf("dxvk.numCompilerThreads" to "1", "dxvk.maxFrameLatency" to "2"),
-        baseWine,
-    )
-
-    val balanced = RuntimePreset(
-        "balanced", "Баланс", 0.7f, 45,
-        baseBox64 + mapOf(
-            "BOX64_DYNAREC_BIGBLOCK" to "2",
-            "BOX64_DYNAREC_FORWARD" to "512",
-            "BOX64_DYNAREC_STRONGMEM" to "2",
-        ),
-        baseDxvk + mapOf("dxvk.numCompilerThreads" to "2"),
-        baseWine,
-    )
-
-    val performance = RuntimePreset(
-        "performance", "Производительность", 1.0f, 60,
-        baseBox64 + mapOf(
-            "BOX64_DYNAREC_BIGBLOCK" to "3",
-            "BOX64_DYNAREC_FORWARD" to "512",
-            "BOX64_DYNAREC_STRONGMEM" to "2",
-            "BOX64_DYNAREC_X87DOUBLE" to "1",
-        ),
-        baseDxvk + mapOf("dxvk.numCompilerThreads" to "4"),
-        baseWine,
-    )
-
-    val all = listOf(mali, battery, balanced, performance)
-}
-
-@Composable
-private fun PresetsScreen() {
-    var selected by remember { mutableStateOf("mali") }
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
-        Text("ПРЕСЕТ РАНТАЙМА", color = Color(0xFF6B7683), fontSize = 11.sp)
-        Spacer(Modifier.height(8.dp))
-
-        Presets.all.forEach { p ->
-            val on = p.id == selected
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(if (on) Color(0xFF16232B) else Color(0xFF12161B))
-                    .border(
-                        1.dp,
-                        if (on) Color(0xFF00E5FF) else Color(0xFF232A32),
-                        RoundedCornerShape(10.dp),
-                    )
-                    .clickable { selected = p.id }
-                    .padding(12.dp),
-            ) {
-                Text(
-                    p.name,
-                    color = if (on) Color(0xFF00E5FF) else Color(0xFFE6EDF3),
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "разрешение " + (p.resScale * 100).toInt() + "%   лимит " + p.fpsLimit + " FPS",
-                    color = Color(0xFF8A97A5),
-                    fontSize = 12.sp,
-                )
-            }
-        }
-
-        Spacer(Modifier.height(20.dp))
-        Text("ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ", color = Color(0xFF6B7683), fontSize = 11.sp)
-        Spacer(Modifier.height(6.dp))
-
-        val cur = Presets.all.first { it.id == selected }
-        (cur.env() + cur.dxvk).entries.sortedBy { it.key }.forEach { e ->
-            Text(
-                e.key + "=" + e.value,
-                color = Color(0xFF9FB0C0),
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(vertical = 1.dp),
-            )
-        }
-        Spacer(Modifier.height(24.dp))
-    }
-}
-
-// ---------- ОВЕРЛЕЙ ----------
-
-enum class MouseButton { LEFT, MIDDLE, RIGHT }
-
-enum class PlayMode { STUDIO, PLAY }
-
-interface InputSink {
-    fun move(dx: Float, dy: Float)
-    fun button(button: MouseButton, down: Boolean)
-    fun wheel(delta: Float)
-    fun key(keyCode: Int, down: Boolean)
-}
-
-class LogInputSink(private val state: OverlayState) : InputSink {
-    override fun move(dx: Float, dy: Float) = Unit
-    override fun button(button: MouseButton, down: Boolean) {
-        if (down) state.lastEvent = button.name + " нажата"
-    }
-    override fun wheel(delta: Float) {
-        if (delta > 0.3f || delta < -0.3f) state.lastEvent = "колесо " + "%.1f".format(delta)
-    }
-    override fun key(keyCode: Int, down: Boolean) {
-        if (down) state.lastEvent = "клавиша " + keyCode
-    }
-}
-
-private const val KEY_SHIFT = 16
-private const val KEY_SPACE = 32
-private const val KEY_W = 87
-private const val KEY_A = 65
-private const val KEY_S = 83
-private const val KEY_D = 68
-
-@Serializable
-data class OverlayButton(
-    val id: String,
-    val label: String,
-    val x: Float,
-    val y: Float,
-    val size: Float = 0.10f,
-    val isModifier: Boolean = false,
-    val keyCode: Int = 0,
-)
-
-@Serializable
-data class OverlayLayout(
-    val name: String = "default",
-    val padZoneWidth: Float = 0.34f,
-    val cursorSpeed: Float = 1.0f,
-    val offsetCursor: Boolean = true,
-    val loupeEnabled: Boolean = true,
-    val loupeRadius: Float = 78f,
-    val joystickRadius: Float = 0.17f,
-    val buttonScale: Float = 1.0f,
-    val buttonAlpha: Float = 0.47f,
-    val cursorMode: Int = 1,
-    val buttons: List<OverlayButton> = defaultButtons(),
-)
-
-fun defaultButtons(): List<OverlayButton> = listOf(
-    OverlayButton("ctrl", "CTRL", 0.365f, 0.855f, isModifier = true),
-    OverlayButton("shift", "SHIFT", 0.445f, 0.855f, isModifier = true),
-    OverlayButton("alt", "ALT", 0.525f, 0.855f, isModifier = true),
-    OverlayButton("t1", "1", 0.605f, 0.855f, keyCode = 49),
-    OverlayButton("t2", "2", 0.672f, 0.855f, keyCode = 50),
-    OverlayButton("t3", "3", 0.739f, 0.855f, keyCode = 51),
-    OverlayButton("t4", "4", 0.806f, 0.855f, keyCode = 52),
-    OverlayButton("esc", "ESC", 0.873f, 0.855f, keyCode = 27),
-    OverlayButton("del", "DEL", 0.940f, 0.855f, keyCode = 127),
-    OverlayButton("space", "JUMP", 0.940f, 0.745f, keyCode = KEY_SPACE),
-    OverlayButton("focus", "F", 0.873f, 0.745f, keyCode = 70),
-    OverlayButton("undo", "Z", 0.806f, 0.745f, keyCode = 90),
-)
-
-enum class Latch { OFF, ONCE, LOCKED }
-
-class OverlayState {
-    var cursor by mutableStateOf(Offset.Zero)
-    var cursorVisible by mutableStateOf(true)
-    var cursorTouchAt by mutableStateOf(0L)
-    var editMode by mutableStateOf(false)
-    var fineAim by mutableStateOf(false)
-    var cameraActive by mutableStateOf(false)
-    var lastEvent by mutableStateOf("")
-
-    var mode by mutableStateOf(PlayMode.STUDIO)
-    var walkLatch by mutableStateOf(false)
-    var joyActive by mutableStateOf(false)
-    var joyBase by mutableStateOf(Offset.Zero)
-    var joyKnob by mutableStateOf(Offset.Zero)
-
-    var ctrl by mutableStateOf(Latch.OFF)
-    var shift by mutableStateOf(Latch.OFF)
-    var alt by mutableStateOf(Latch.OFF)
-
-    fun toggle(id: String) {
-        when (id) {
-            "ctrl" -> ctrl = ctrl.next()
-            "shift" -> shift = shift.next()
-            "alt" -> alt = alt.next()
+    private fun installCrashHandler() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try { File(filesDir, "crash.txt").writeText("${Date()}\n${t.name}\n" + Log.getStackTraceString(e)) }
+            catch (_: Throwable) {}
+            prev?.uncaughtException(t, e)
         }
     }
-
-    fun consumeOnce() {
-        if (ctrl == Latch.ONCE) ctrl = Latch.OFF
-        if (shift == Latch.ONCE) shift = Latch.OFF
-        if (alt == Latch.ONCE) alt = Latch.OFF
-    }
-
-    private fun Latch.next() = when (this) {
-        Latch.OFF -> Latch.ONCE
-        Latch.ONCE -> Latch.LOCKED
-        Latch.LOCKED -> Latch.OFF
-    }
-}
-
-private enum class Role { PAD, JOY, CAMERA, MULTI, IDLE }
-
-private fun applyMove(sink: InputSink, nx: Float, ny: Float, held: MutableSet<Int>, runOn: BooleanArray) {
-    val dead = 0.28f
-    val want = HashSet<Int>()
-    if (ny < -dead) want.add(KEY_W)
-    if (ny > dead) want.add(KEY_S)
-    if (nx < -dead) want.add(KEY_A)
-    if (nx > dead) want.add(KEY_D)
-
-    for (k in held.toList()) {
-        if (k !in want) {
-            sink.key(k, false)
-            held.remove(k)
-        }
-    }
-    for (k in want) {
-        if (k !in held) {
-            sink.key(k, true)
-            held.add(k)
-        }
-    }
-
-    val mag = nx * nx + ny * ny
-    val run = mag > 0.72f
-    if (run != runOn[0]) {
-        sink.key(KEY_SHIFT, run)
-        runOn[0] = run
-    }
-}
-
-@Composable
-private fun TouchOverlay(
-    layout: OverlayLayout,
-    sink: InputSink,
-    state: OverlayState,
-    onLayoutChange: (OverlayLayout) -> Unit,
-) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val w = constraints.maxWidth.toFloat()
-        val h = constraints.maxHeight.toFloat()
-        val padEdge = w * layout.padZoneWidth
-        val offsetY = if (layout.offsetCursor) 52f else 0f
-        val joyR = minOf(w, h) * layout.joystickRadius
-
-        LaunchedEffect(w, h) {
-            if (state.cursor == Offset.Zero) {
-                state.cursor = Offset(w * 0.5f, h * 0.5f)
-            }
-        }
-
-        LaunchedEffect(state.cursorTouchAt) {
-            if (layout.cursorMode == 1 && state.cursorTouchAt > 0L) {
-                state.cursorVisible = true
-                delay(1500)
-                state.cursorVisible = false
-            }
-        }
-
-        Box(
-            Modifier
-                .fillMaxSize()
-                .pointerInput(state.editMode, state.mode, state.walkLatch) {
-                    if (state.editMode) return@pointerInput
-                    val play = state.mode == PlayMode.PLAY || state.walkLatch
-                    awaitPointerEventScope {
-                        val roles = HashMap<PointerId, Role>()
-                        val startPos = HashMap<PointerId, Offset>()
-                        val lastPos = HashMap<PointerId, Offset>()
-                        val startTime = HashMap<PointerId, Long>()
-                        val longFired = HashSet<PointerId>()
-                        val heldKeys = HashSet<Int>()
-                        val runOn = booleanArrayOf(false)
-                        var lastTapAt = 0L
-                        var lastTapPos = Offset.Zero
-
-                        while (true) {
-                            val ev = awaitPointerEvent(PointerEventPass.Main)
-
-                            for (ch in ev.changes) {
-                                if (ch.pressed && !ch.previousPressed && !ch.isConsumed) {
-                                    val pos = ch.position
-                                    val role = when {
-                                        roles.isEmpty() && pos.x <= padEdge ->
-                                            if (play) Role.JOY else Role.PAD
-                                        roles.isEmpty() -> Role.CAMERA
-                                        roles.size == 1 &&
-                                                roles.values.first() == Role.JOY -> Role.IDLE
-                                        roles.size == 1 &&
-                                                roles.values.first() == Role.PAD -> Role.MULTI
-                                        else -> Role.IDLE
-                                    }
-                                    roles[ch.id] = role
-                                    startPos[ch.id] = pos
-                                    lastPos[ch.id] = pos
-                                    startTime[ch.id] = System.currentTimeMillis()
-                                    if (role == Role.CAMERA) {
-                                        sink.button(MouseButton.RIGHT, true)
-                                        state.cameraActive = true
-                                    }
-                                    if (role == Role.PAD) {
-                                        state.cursor = pos.copy(y = pos.y - offsetY)
-                                        state.cursorVisible = true
-                                        state.cursorTouchAt = System.currentTimeMillis()
-                                    }
-                                    if (role == Role.JOY) {
-                                        state.joyBase = pos
-                                        state.joyKnob = Offset.Zero
-                                        state.joyActive = true
-                                    }
-                                }
-                            }
-
-                            for (ch in ev.changes) {
-                                val role = roles[ch.id] ?: continue
-                                val pos = ch.position
-                                val prev = lastPos[ch.id] ?: pos
-                                val d = pos - prev
-
-                                when (role) {
-                                    Role.PAD -> {
-                                        val speed = layout.cursorSpeed *
-                                                (if (state.fineAim) 0.5f else 1f)
-                                        state.cursor = Offset(
-                                            (state.cursor.x + d.x * speed).coerceIn(0f, w),
-                                            (state.cursor.y + d.y * speed).coerceIn(0f, h),
-                                        )
-                                        state.cursorTouchAt = System.currentTimeMillis()
-                                        lastPos[ch.id] = pos
-
-                                        val held = System.currentTimeMillis() -
-                                                (startTime[ch.id] ?: 0L)
-                                        val moved = (pos - (startPos[ch.id] ?: pos)).getDistance()
-                                        if (held > 450 && moved < 26f && longFired.add(ch.id)) {
-                                            sink.button(MouseButton.RIGHT, true)
-                                            sink.button(MouseButton.RIGHT, false)
-                                            state.lastEvent = "ПКМ (долгий тап)"
-                                        }
-                                    }
-                                    Role.JOY -> {
-                                        val v = pos - (startPos[ch.id] ?: pos)
-                                        val len = v.getDistance()
-                                        state.joyKnob = if (len > joyR) v * (joyR / len) else v
-                                        applyMove(
-                                            sink,
-                                            state.joyKnob.x / joyR,
-                                            state.joyKnob.y / joyR,
-                                            heldKeys,
-                                            runOn,
-                                        )
-                                        state.lastEvent = "ходьба"
-                                    }
-                                    Role.CAMERA -> {
-                                        sink.move(d.x, d.y)
-                                        lastPos[ch.id] = pos
-                                    }
-                                    Role.MULTI -> {
-                                        sink.wheel(-d.y * 0.06f)
-                                        lastPos[ch.id] = pos
-                                    }
-                                    Role.IDLE -> lastPos[ch.id] = pos
-                                }
-                                ch.consume()
-                            }
-
-                            for (ch in ev.changes) {
-                                if (ch.pressed || !ch.previousPressed) continue
-                                val role = roles.remove(ch.id) ?: continue
-                                val st = startPos[ch.id] ?: Offset.Zero
-                                val t0 = startTime[ch.id] ?: 0L
-                                val dist = (ch.position - st).getDistance()
-                                val dt = System.currentTimeMillis() - t0
-
-                                val quickTap = dt < 220 && dist < 26f && !longFired.contains(ch.id)
-
-                                if ((role == Role.PAD || role == Role.JOY) && quickTap) {
-                                    val now = System.currentTimeMillis()
-                                    val isDouble = now - lastTapAt < 320 &&
-                                            (ch.position - lastTapPos).getDistance() < 70f
-                                    sink.button(MouseButton.LEFT, true)
-                                    sink.button(MouseButton.LEFT, false)
-                                    if (isDouble) {
-                                        sink.button(MouseButton.LEFT, true)
-                                        sink.button(MouseButton.LEFT, false)
-                                    }
-                                    state.lastEvent = if (isDouble) "двойной клик" else "клик"
-                                    state.consumeOnce()
-                                    lastTapAt = now
-                                    lastTapPos = ch.position
-                                }
-
-                                if (role == Role.PAD) {
-                                    state.cursorTouchAt = System.currentTimeMillis()
-                                }
-
-                                if (role == Role.JOY) {
-                                    for (k in heldKeys.toList()) {
-                                        sink.key(k, false)
-                                        heldKeys.remove(k)
-                                    }
-                                    if (runOn[0]) {
-                                        sink.key(KEY_SHIFT, false)
-                                        runOn[0] = false
-                                    }
-                                    state.joyActive = false
-                                    state.joyKnob = Offset.Zero
-                                }
-
-                                if (role == Role.CAMERA) {
-                                    sink.button(MouseButton.RIGHT, false)
-                                    if (roles.values.none { it == Role.CAMERA }) {
-                                        state.cameraActive = false
-                                    }
-                                }
-
-                                startPos.remove(ch.id)
-                                lastPos.remove(ch.id)
-                                startTime.remove(ch.id)
-                                longFired.remove(ch.id)
-                                ch.consume()
-                            }
-                        }
-                    }
-                }
-        )
-
-        layout.buttons.forEach { btn ->
-            key(btn.id) {
-                OverlayButtonView(
-                    btn = btn,
-                    state = state,
-                    layout = layout,
-                    containerW = w,
-                    containerH = h,
-                    sink = sink,
-                    onMoved = { nx, ny ->
-                        onLayoutChange(
-                            layout.copy(
-                                buttons = layout.buttons.map {
-                                    if (it.id == btn.id) it.copy(x = nx, y = ny) else it
-                                },
-                            ),
-                        )
-                    },
-                )
-            }
-        }
-
-        CursorLayer(state, layout, padEdge, joyR)
-
-        if (!state.editMode) {
-            val play = state.mode == PlayMode.PLAY || state.walkLatch
-            Text(
-                if (play) "ХОДЬБА" else "ПАД",
-                color = Color(0x55FFFFFF),
-                fontSize = 10.sp,
-                modifier = Modifier.align(Alignment.BottomStart).padding(start = 10.dp, bottom = 6.dp),
-            )
-            Text(
-                if (state.cameraActive) "ОБЗОР (тяни)" else "ОБЗОР",
-                color = if (state.cameraActive) Color(0xCCFFB300) else Color(0x44FFFFFF),
-                fontSize = 10.sp,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun OverlayButtonView(
-    btn: OverlayButton,
-    state: OverlayState,
-    layout: OverlayLayout,
-    containerW: Float,
-    containerH: Float,
-    sink: InputSink,
-    onMoved: (Float, Float) -> Unit,
-) {
-    val density = LocalDensity.current
-    val base = minOf(containerW, containerH)
-    val sizeDp = with(density) { (base * btn.size * layout.buttonScale).toDp() }
-    val baseX = with(density) { (containerW * btn.x).toDp() }
-    val baseY = with(density) { (containerH * btn.y).toDp() }
-
-    var dx by remember { mutableFloatStateOf(0f) }
-    var dy by remember { mutableFloatStateOf(0f) }
-
-    val curX by rememberUpdatedState(btn.x)
-    val curY by rememberUpdatedState(btn.y)
-    val curOnMoved by rememberUpdatedState(onMoved)
-
-    val latch = when (btn.id) {
-        "ctrl" -> state.ctrl
-        "shift" -> state.shift
-        "alt" -> state.alt
-        else -> Latch.OFF
-    }
-
-    Box(
-        Modifier
-            .offset(x = baseX + with(density) { dx.toDp() }, y = baseY + with(density) { dy.toDp() })
-            .size(sizeDp)
-            .clip(CircleShape)
-            .background(
-                when {
-                    latch == Latch.LOCKED -> Color(0xCC00E5FF)
-                    latch == Latch.ONCE -> Color(0x99FFB300)
-                    else -> Color(0xFF000000).copy(alpha = layout.buttonAlpha)
-                },
-            )
-            .border(1.dp, Color(0x66FFFFFF), CircleShape)
-            .pointerInput(btn.id, state.editMode) {
-                if (state.editMode) {
-                    detectDragGestures(
-                        onDrag = { _, drag -> dx += drag.x; dy += drag.y },
-                        onDragEnd = {
-                            curOnMoved(
-                                (curX + dx / containerW).coerceIn(0.01f, 0.97f),
-                                (curY + dy / containerH).coerceIn(0.02f, 0.96f),
-                            )
-                            dx = 0f
-                            dy = 0f
-                        },
-                        onDragCancel = {
-                            dx = 0f
-                            dy = 0f
-                        },
-                    )
-                } else {
-                    detectTapGestures(
-                        onTap = {
-                            if (btn.isModifier) {
-                                state.toggle(btn.id)
-                                state.lastEvent = "модификатор " + btn.label
-                            } else {
-                                if (state.ctrl != Latch.OFF) sink.key(17, true)
-                                if (state.shift != Latch.OFF) sink.key(KEY_SHIFT, true)
-                                if (state.alt != Latch.OFF) sink.key(18, true)
-                                sink.key(btn.keyCode, true)
-                                sink.key(btn.keyCode, false)
-                                if (state.ctrl != Latch.OFF) sink.key(17, false)
-                                if (state.shift != Latch.OFF) sink.key(KEY_SHIFT, false)
-                                if (state.alt != Latch.OFF) sink.key(18, false)
-                                state.lastEvent = "клавиша " + btn.label
-                                state.consumeOnce()
-                            }
-                        },
-                    )
-                }
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(btn.label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-@Composable
-private fun CursorLayer(state: OverlayState, layout: OverlayLayout, padEdge: Float, joyR: Float) {
-    Canvas(Modifier.fillMaxSize()) {
-        drawLine(Color(0x22FFFFFF), Offset(padEdge, 0f), Offset(padEdge, size.height), 2f)
-
-        if (state.cameraActive) {
-            drawRect(
-                color = Color(0x22FFB300),
-                topLeft = Offset(padEdge, 0f),
-                size = Size(size.width - padEdge, size.height),
-            )
-        }
-
-        if (state.mode == PlayMode.PLAY || state.walkLatch) {
-            val base = if (state.joyActive) state.joyBase else Offset(size.width * 0.15f, size.height * 0.75f)
-            val knob = if (state.joyActive) state.joyKnob else Offset.Zero
-            drawCircle(Color(0x3300E5FF), joyR, base)
-            drawCircle(Color(0x7700E5FF), joyR, base, style = Stroke(2f))
-            drawCircle(Color(0xAA00E5FF), joyR * 0.42f, base + knob)
-            drawCircle(Color(0xCCFFFFFF), 3f, base + knob)
-            return@Canvas
-        }
-
-        val showCursor = when (layout.cursorMode) {
-            0 -> true
-            2 -> false
-            else -> state.cursorVisible
-        }
-        if (!showCursor) return@Canvas
-
-        val c = state.cursor
-        drawCircle(Color(0x6600E5FF), radius = 30f, center = c, style = Stroke(2f))
-        drawCircle(Color(0xAA00E5FF), radius = 3f, center = c)
-        drawLine(Color(0xCC00E5FF), c - Offset(16f, 0f), c + Offset(16f, 0f), 2f)
-        drawLine(Color(0xCC00E5FF), c - Offset(0f, 16f), c + Offset(0f, 16f), 2f)
-
-        if (layout.loupeEnabled) {
-            val r = layout.loupeRadius
-            val center = Offset(c.x, (c.y - r - 24f).coerceAtLeast(r + 4f))
-            drawCircle(Color(0xCC000000), r, center)
-            drawCircle(Color(0x6600E5FF), r, center, style = Stroke(2f))
-            drawLine(Color(0xFF00E5FF), center - Offset(10f, 0f), center + Offset(10f, 0f), 2f)
-            drawLine(Color(0xFF00E5FF), center - Offset(0f, 10f), center + Offset(0f, 10f), 2f)
-        }
-    }
-}
-
-// ---------- СЕССИЯ ----------
-
-private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
-
-@Composable
-private fun SessionScreen(
-    layout: OverlayLayout,
-    onLayoutChange: (OverlayLayout) -> Unit,
-    state: OverlayState,
-) {
-    val sink = remember { LogInputSink(state) }
-
-    Box(Modifier.fillMaxSize().background(Color(0xFF0A0C0F))) {
-        TouchOverlay(
-            layout = layout,
-            sink = sink,
-            state = state,
-            onLayoutChange = onLayoutChange,
-        )
-
-        Row(
-            Modifier.align(Alignment.TopEnd).padding(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Chip(if (state.mode == PlayMode.PLAY) "Режим: Игра" else "Режим: Студия") {
-                state.mode = if (state.mode == PlayMode.PLAY) PlayMode.STUDIO else PlayMode.PLAY
-            }
-            Chip(if (state.walkLatch) "WASD вкл" else "WASD выкл") {
-                state.walkLatch = !state.walkLatch
-            }
-            Chip(if (state.editMode) "Готово" else "Раскладка") { state.editMode = !state.editMode }
-            Chip(if (layout.loupeEnabled) "Лупа вкл" else "Лупа выкл") {
-                onLayoutChange(layout.copy(loupeEnabled = !layout.loupeEnabled))
-            }
-            Chip(if (state.fineAim) "Точно" else "Быстро") { state.fineAim = !state.fineAim }
-        }
-    }
-}
-
-@Composable
-private fun Chip(label: String, onClick: () -> Unit) {
-    Text(
-        label,
-        color = Color(0xFFC8D2DC),
-        fontSize = 11.sp,
-        modifier = Modifier
-            .clip(RoundedCornerShape(20.dp))
-            .background(Color(0xAA1B2229))
-            .clickable { onClick() }
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-    )
 }
