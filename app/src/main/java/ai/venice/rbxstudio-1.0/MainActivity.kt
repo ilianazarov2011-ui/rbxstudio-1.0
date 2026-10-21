@@ -105,7 +105,7 @@ private fun RbxTheme(content: @Composable () -> Unit) {
 private fun App() {
     val ctx = LocalContext.current
     var tab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Диагностика", "Пресеты", "Сессия", "Лог")
+    val tabs = listOf("Пуск", "Диагностика", "Пресеты", "Сессия", "Лог")
 
     val crashText = remember {
         runCatching {
@@ -148,12 +148,76 @@ private fun App() {
                 }
             }
             when (tab) {
-                0 -> DiagnosticsScreen()
-                1 -> PresetsScreen()
-                2 -> SessionScreen()
+                0 -> LaunchScreen()
+                1 -> DiagnosticsScreen()
+                2 -> PresetsScreen()
+                3 -> SessionScreen()
                 else -> LogScreen()
             }
         }
+    }
+}
+
+// ---------- ПУСК ----------
+
+@Composable
+private fun LaunchScreen() {
+    var pressed by remember { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        Text("ЗАПУСК", color = Color(0xFF6B7683), fontSize = 11.sp)
+        Spacer(Modifier.height(12.dp))
+
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(76.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(if (pressed) Color(0xFF0E3A44) else Color(0xFF16232B))
+                .border(1.dp, Color(0xFF00E5FF), RoundedCornerShape(14.dp))
+                .clickable { pressed = !pressed },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                if (pressed) "ЗАПУСКАЮ..." else "ЗАПУСТИТЬ ROBLOX STUDIO",
+                color = Color(0xFF00E5FF),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+
+        Spacer(Modifier.height(18.dp))
+        Text("СОСТОЯНИЕ", color = Color(0xFF6B7683), fontSize = 11.sp)
+        Spacer(Modifier.height(8.dp))
+
+        StepRow("Wine рантайм", false)
+        StepRow("Box64 (x86 -> ARM)", false)
+        StepRow("DXVK (Direct3D -> Vulkan)", false)
+        StepRow("Префикс со Studio", false)
+        StepRow("Вход в аккаунт", false)
+
+        Spacer(Modifier.height(18.dp))
+        Text(
+            "Сейчас кнопка ничего не запускает - Wine ещё не подключён. " +
+                "Следующий шаг как раз это.",
+            color = Color(0xFF8A97A5),
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun StepRow(name: String, done: Boolean) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(16.dp)
+                .clip(CircleShape)
+                .background(if (done) Color(0xFF4CD964) else Color(0xFF2A323A)),
+        )
+        Spacer(Modifier.size(10.dp))
+        Text(name, color = Color(0xFFC8D2DC), fontSize = 13.sp)
     }
 }
 
@@ -478,6 +542,21 @@ object Presets {
         "dxvk.enableAsync" to "True",
     )
 
+    val mali = RuntimePreset(
+        "mali", "Mali (твой чип)", 0.5f, 30,
+        baseBox64 + mapOf(
+            "BOX64_DYNAREC_BIGBLOCK" to "1",
+            "BOX64_DYNAREC_FORWARD" to "256",
+            "BOX64_DYNAREC_STRONGMEM" to "1",
+        ),
+        baseDxvk + mapOf(
+            "dxvk.numCompilerThreads" to "1",
+            "dxvk.maxFrameLatency" to "2",
+            "dxvk.enableGraphicsPipelineLibrary" to "False",
+        ),
+        baseWine + mapOf("DXVK_FRAME_RATE" to "30"),
+    )
+
     val battery = RuntimePreset(
         "battery", "Батарея", 0.5f, 30,
         baseBox64 + mapOf(
@@ -498,21 +577,6 @@ object Presets {
         ),
         baseDxvk + mapOf("dxvk.numCompilerThreads" to "2"),
         baseWine,
-    )
-
-    val mali = RuntimePreset(
-        "mali", "Mali (твой чип)", 0.5f, 30,
-        baseBox64 + mapOf(
-            "BOX64_DYNAREC_BIGBLOCK" to "1",
-            "BOX64_DYNAREC_FORWARD" to "256",
-            "BOX64_DYNAREC_STRONGMEM" to "1",
-        ),
-        baseDxvk + mapOf(
-            "dxvk.numCompilerThreads" to "1",
-            "dxvk.maxFrameLatency" to "2",
-            "dxvk.enableGraphicsPipelineLibrary" to "False",
-        ),
-        baseWine + mapOf("DXVK_FRAME_RATE" to "30"),
     )
 
     val performance = RuntimePreset(
@@ -591,6 +655,8 @@ private fun PresetsScreen() {
 
 enum class MouseButton { LEFT, MIDDLE, RIGHT }
 
+enum class PlayMode { STUDIO, PLAY }
+
 interface InputSink {
     fun move(dx: Float, dy: Float)
     fun button(button: MouseButton, down: Boolean)
@@ -610,6 +676,13 @@ class LogInputSink(private val state: OverlayState) : InputSink {
         if (down) state.lastEvent = "клавиша " + keyCode
     }
 }
+
+private const val KEY_SHIFT = 16
+private const val KEY_SPACE = 32
+private const val KEY_W = 87
+private const val KEY_A = 65
+private const val KEY_S = 83
+private const val KEY_D = 68
 
 @Serializable
 data class OverlayButton(
@@ -642,8 +715,9 @@ fun defaultButtons(): List<OverlayButton> = listOf(
     OverlayButton("t4", "4", 0.806f, 0.855f, keyCode = 52),
     OverlayButton("esc", "ESC", 0.873f, 0.855f, keyCode = 27),
     OverlayButton("del", "DEL", 0.940f, 0.855f, keyCode = 127),
-    OverlayButton("focus", "F", 0.940f, 0.745f, keyCode = 70),
-    OverlayButton("undo", "Z", 0.873f, 0.745f, keyCode = 90),
+    OverlayButton("space", "JUMP", 0.940f, 0.745f, keyCode = KEY_SPACE),
+    OverlayButton("focus", "F", 0.873f, 0.745f, keyCode = 70),
+    OverlayButton("undo", "Z", 0.806f, 0.745f, keyCode = 90),
 )
 
 enum class Latch { OFF, ONCE, LOCKED }
@@ -655,6 +729,11 @@ class OverlayState {
     var fineAim by mutableStateOf(false)
     var cameraActive by mutableStateOf(false)
     var lastEvent by mutableStateOf("")
+
+    var mode by mutableStateOf(PlayMode.STUDIO)
+    var joyActive by mutableStateOf(false)
+    var joyBase by mutableStateOf(Offset.Zero)
+    var joyKnob by mutableStateOf(Offset.Zero)
 
     var ctrl by mutableStateOf(Latch.OFF)
     var shift by mutableStateOf(Latch.OFF)
@@ -681,7 +760,36 @@ class OverlayState {
     }
 }
 
-private enum class Role { PAD, CAMERA, MULTI, IDLE }
+private enum class Role { PAD, JOY, CAMERA, MULTI, IDLE }
+
+private fun applyMove(sink: InputSink, nx: Float, ny: Float, held: MutableSet<Int>, runOn: BooleanArray) {
+    val dead = 0.28f
+    val want = HashSet<Int>()
+    if (ny < -dead) want.add(KEY_W)
+    if (ny > dead) want.add(KEY_S)
+    if (nx < -dead) want.add(KEY_A)
+    if (nx > dead) want.add(KEY_D)
+
+    for (k in held.toList()) {
+        if (k !in want) {
+            sink.key(k, false)
+            held.remove(k)
+        }
+    }
+    for (k in want) {
+        if (k !in held) {
+            sink.key(k, true)
+            held.add(k)
+        }
+    }
+
+    val mag = nx * nx + ny * ny
+    val run = mag > 0.72f
+    if (run != runOn[0]) {
+        sink.key(KEY_SHIFT, run)
+        runOn[0] = run
+    }
+}
 
 @Composable
 private fun TouchOverlay(
@@ -695,6 +803,7 @@ private fun TouchOverlay(
         val h = constraints.maxHeight.toFloat()
         val padEdge = w * layout.padZoneWidth
         val offsetY = if (layout.offsetCursor) 52f else 0f
+        val joyR = minOf(w, h) * 0.17f
 
         LaunchedEffect(w, h) {
             if (state.cursor == Offset.Zero) {
@@ -705,14 +814,17 @@ private fun TouchOverlay(
         Box(
             Modifier
                 .fillMaxSize()
-                .pointerInput(state.editMode) {
+                .pointerInput(state.editMode, state.mode) {
                     if (state.editMode) return@pointerInput
+                    val play = state.mode == PlayMode.PLAY
                     awaitPointerEventScope {
                         val roles = HashMap<PointerId, Role>()
                         val startPos = HashMap<PointerId, Offset>()
                         val lastPos = HashMap<PointerId, Offset>()
                         val startTime = HashMap<PointerId, Long>()
                         val longFired = HashSet<PointerId>()
+                        val heldKeys = HashSet<Int>()
+                        val runOn = booleanArrayOf(false)
                         var lastTapAt = 0L
                         var lastTapPos = Offset.Zero
 
@@ -723,8 +835,11 @@ private fun TouchOverlay(
                                 if (ch.pressed && !ch.previousPressed && !ch.isConsumed) {
                                     val pos = ch.position
                                     val role = when {
-                                        roles.isEmpty() && pos.x <= padEdge -> Role.PAD
+                                        roles.isEmpty() && pos.x <= padEdge ->
+                                            if (play) Role.JOY else Role.PAD
                                         roles.isEmpty() -> Role.CAMERA
+                                        roles.size == 1 &&
+                                                roles.values.first() == Role.JOY -> Role.IDLE
                                         roles.size == 1 &&
                                                 roles.values.first() == Role.PAD -> Role.MULTI
                                         else -> Role.IDLE
@@ -739,6 +854,11 @@ private fun TouchOverlay(
                                     }
                                     if (role == Role.PAD) {
                                         state.cursor = pos.copy(y = pos.y - offsetY)
+                                    }
+                                    if (role == Role.JOY) {
+                                        state.joyBase = pos
+                                        state.joyKnob = Offset.Zero
+                                        state.joyActive = true
                                     }
                                 }
                             }
@@ -768,6 +888,19 @@ private fun TouchOverlay(
                                             state.lastEvent = "ПКМ (долгий тап)"
                                         }
                                     }
+                                    Role.JOY -> {
+                                        val v = pos - (startPos[ch.id] ?: pos)
+                                        val len = v.getDistance()
+                                        state.joyKnob = if (len > joyR) v * (joyR / len) else v
+                                        applyMove(
+                                            sink,
+                                            state.joyKnob.x / joyR,
+                                            state.joyKnob.y / joyR,
+                                            heldKeys,
+                                            runOn,
+                                        )
+                                        state.lastEvent = "ходьба"
+                                    }
                                     Role.CAMERA -> {
                                         sink.move(d.x, d.y)
                                         lastPos[ch.id] = pos
@@ -789,9 +922,9 @@ private fun TouchOverlay(
                                 val dist = (ch.position - st).getDistance()
                                 val dt = System.currentTimeMillis() - t0
 
-                                if (role == Role.PAD && dt < 220 && dist < 26f &&
-                                    !longFired.contains(ch.id)
-                                ) {
+                                val quickTap = dt < 220 && dist < 26f && !longFired.contains(ch.id)
+
+                                if ((role == Role.PAD || role == Role.JOY) && quickTap) {
                                     val now = System.currentTimeMillis()
                                     val isDouble = now - lastTapAt < 320 &&
                                             (ch.position - lastTapPos).getDistance() < 70f
@@ -806,6 +939,20 @@ private fun TouchOverlay(
                                     lastTapAt = now
                                     lastTapPos = ch.position
                                 }
+
+                                if (role == Role.JOY) {
+                                    for (k in heldKeys.toList()) {
+                                        sink.key(k, false)
+                                        heldKeys.remove(k)
+                                    }
+                                    if (runOn[0]) {
+                                        sink.key(KEY_SHIFT, false)
+                                        runOn[0] = false
+                                    }
+                                    state.joyActive = false
+                                    state.joyKnob = Offset.Zero
+                                }
+
                                 if (role == Role.CAMERA) {
                                     sink.button(MouseButton.RIGHT, false)
                                     if (roles.values.none { it == Role.CAMERA }) {
@@ -845,26 +992,30 @@ private fun TouchOverlay(
             }
         }
 
-        CursorLayer(state, layout, padEdge)
+        CursorLayer(state, layout, padEdge, joyR)
 
-        Text(
-            "ПАД",
-            color = Color(0x55FFFFFF),
-            fontSize = 10.sp,
-            modifier = Modifier.align(Alignment.BottomStart).padding(start = 10.dp, bottom = 6.dp),
-        )
-        Text(
-            if (state.cameraActive) "КАМЕРА (тяни)" else "КАМЕРА",
-            color = if (state.cameraActive) Color(0xCCFFB300) else Color(0x44FFFFFF),
-            fontSize = 10.sp,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp),
-        )
-        Text(
-            "левая зона - курсор, правая - камера",
-            color = Color(0x33FFFFFF),
-            fontSize = 10.sp,
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 6.dp),
-        )
+        if (!state.editMode) {
+            val play = state.mode == PlayMode.PLAY
+            Text(
+                if (play) "ХОДЬБА" else "ПАД",
+                color = Color(0x55FFFFFF),
+                fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.BottomStart).padding(start = 10.dp, bottom = 6.dp),
+            )
+            Text(
+                if (state.cameraActive) "ОБЗОР (тяни)" else "ОБЗОР",
+                color = if (state.cameraActive) Color(0xCCFFB300) else Color(0x44FFFFFF),
+                fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp),
+            )
+            Text(
+                if (play) "левая зона - ходьба, правая - обзор"
+                else "левая зона - курсор, правая - камера",
+                color = Color(0x33FFFFFF),
+                fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 6.dp),
+            )
+        }
     }
 }
 
@@ -886,7 +1037,6 @@ private fun OverlayButtonView(
     var dx by remember { mutableFloatStateOf(0f) }
     var dy by remember { mutableFloatStateOf(0f) }
 
-    // живые значения, иначе обработчик замораживает старую раскладку
     val curX by rememberUpdatedState(btn.x)
     val curY by rememberUpdatedState(btn.y)
     val curOnMoved by rememberUpdatedState(onMoved)
@@ -936,12 +1086,12 @@ private fun OverlayButtonView(
                                 state.lastEvent = "модификатор " + btn.label
                             } else {
                                 if (state.ctrl != Latch.OFF) sink.key(17, true)
-                                if (state.shift != Latch.OFF) sink.key(16, true)
+                                if (state.shift != Latch.OFF) sink.key(KEY_SHIFT, true)
                                 if (state.alt != Latch.OFF) sink.key(18, true)
                                 sink.key(btn.keyCode, true)
                                 sink.key(btn.keyCode, false)
                                 if (state.ctrl != Latch.OFF) sink.key(17, false)
-                                if (state.shift != Latch.OFF) sink.key(16, false)
+                                if (state.shift != Latch.OFF) sink.key(KEY_SHIFT, false)
                                 if (state.alt != Latch.OFF) sink.key(18, false)
                                 state.lastEvent = "клавиша " + btn.label
                                 state.consumeOnce()
@@ -957,10 +1107,8 @@ private fun OverlayButtonView(
 }
 
 @Composable
-private fun CursorLayer(state: OverlayState, layout: OverlayLayout, padEdge: Float) {
+private fun CursorLayer(state: OverlayState, layout: OverlayLayout, padEdge: Float, joyR: Float) {
     Canvas(Modifier.fillMaxSize()) {
-        val c = state.cursor
-
         drawLine(Color(0x22FFFFFF), Offset(padEdge, 0f), Offset(padEdge, size.height), 2f)
 
         if (state.cameraActive) {
@@ -971,6 +1119,17 @@ private fun CursorLayer(state: OverlayState, layout: OverlayLayout, padEdge: Flo
             )
         }
 
+        if (state.mode == PlayMode.PLAY) {
+            val base = if (state.joyActive) state.joyBase else Offset(size.width * 0.15f, size.height * 0.75f)
+            val knob = if (state.joyActive) state.joyKnob else Offset.Zero
+            drawCircle(Color(0x3300E5FF), joyR, base)
+            drawCircle(Color(0x7700E5FF), joyR, base, style = Stroke(2f))
+            drawCircle(Color(0xAA00E5FF), joyR * 0.42f, base + knob)
+            drawCircle(Color(0xCCFFFFFF), 3f, base + knob)
+            return@Canvas
+        }
+
+        val c = state.cursor
         drawCircle(Color(0x6600E5FF), radius = 30f, center = c, style = Stroke(2f))
         drawCircle(Color(0xAA00E5FF), radius = 3f, center = c)
         drawLine(Color(0xCC00E5FF), c - Offset(16f, 0f), c + Offset(16f, 0f), 2f)
@@ -1022,12 +1181,13 @@ private fun SessionScreen() {
             Modifier.align(Alignment.TopEnd).padding(8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            Chip(if (state.mode == PlayMode.PLAY) "Режим: Игра" else "Режим: Студия") {
+                state.mode = if (state.mode == PlayMode.PLAY) PlayMode.STUDIO else PlayMode.PLAY
+            }
             Chip(if (state.editMode) "Готово" else "Раскладка") { state.editMode = !state.editMode }
             Chip(if (state.loupeOn) "Лупа вкл" else "Лупа выкл") { state.loupeOn = !state.loupeOn }
             Chip(if (state.fineAim) "Точно" else "Быстро") { state.fineAim = !state.fineAim }
-            Chip("Сброс") {
-                layout = layout.copy(buttons = defaultButtons())
-            }
+            Chip("Сброс") { layout = layout.copy(buttons = defaultButtons()) }
         }
     }
 }
