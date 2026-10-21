@@ -74,7 +74,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Ловим любое падение и пишем его в файл
         val crashFile = File(filesDir, "crash.txt")
         val prev = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
@@ -84,30 +83,7 @@ class MainActivity : ComponentActivity() {
             prev?.uncaughtException(t, e)
         }
 
-        setContent {
-            RbxTheme {
-                try {
-                    App()
-                } catch (e: Throwable) {
-                    CrashScreen("Ошибка отрисовки", e.stackTraceToString())
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CrashScreen(title: String, text: String) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Color(0xFF1A0A0A))
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp),
-    ) {
-        Text(title, color = Color(0xFFFF453A), fontSize = 15.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        Text(text, color = Color(0xFFE6EDF3), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+        setContent { RbxTheme { App() } }
     }
 }
 
@@ -125,11 +101,31 @@ private fun RbxTheme(content: @Composable () -> Unit) {
 
 @Composable
 private fun App() {
+    val ctx = LocalContext.current
     var tab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Диагностика", "Пресеты", "Сессия", "Лог")
 
+    val crashText = remember {
+        runCatching {
+            File(ctx.filesDir, "crash.txt").takeIf { it.exists() }?.readText()
+        }.getOrNull()
+    }
+
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize()) {
+
+            if (!crashText.isNullOrBlank()) {
+                Text(
+                    "БЫЛО ПАДЕНИЕ - открой вкладку Лог",
+                    color = Color(0xFFFF8A80),
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF3A1010))
+                        .padding(5.dp),
+                )
+            }
+
             Row(
                 Modifier.fillMaxWidth().height(38.dp).background(Color(0xFF12161B)),
                 verticalAlignment = Alignment.CenterVertically,
@@ -182,7 +178,13 @@ private fun LogScreen() {
     ) {
         Text("ЛОГ ПАДЕНИЙ", color = Color(0xFF6B7683), fontSize = 11.sp)
         Spacer(Modifier.height(8.dp))
-        Chip("Обновить") { tick++ }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Chip("Обновить") { tick++ }
+            Chip("Очистить") {
+                runCatching { File(ctx.filesDir, "crash.txt").delete() }
+                tick++
+            }
+        }
         Spacer(Modifier.height(10.dp))
         Text(text, color = Color(0xFFE6EDF3), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         Spacer(Modifier.height(24.dp))
