@@ -731,6 +731,7 @@ class OverlayState {
     var lastEvent by mutableStateOf("")
 
     var mode by mutableStateOf(PlayMode.STUDIO)
+    var walkLatch by mutableStateOf(false)
     var joyActive by mutableStateOf(false)
     var joyBase by mutableStateOf(Offset.Zero)
     var joyKnob by mutableStateOf(Offset.Zero)
@@ -814,9 +815,9 @@ private fun TouchOverlay(
         Box(
             Modifier
                 .fillMaxSize()
-                .pointerInput(state.editMode, state.mode) {
+                .pointerInput(state.editMode, state.mode, state.walkLatch) {
                     if (state.editMode) return@pointerInput
-                    val play = state.mode == PlayMode.PLAY
+                    val play = state.mode == PlayMode.PLAY || state.walkLatch
                     awaitPointerEventScope {
                         val roles = HashMap<PointerId, Role>()
                         val startPos = HashMap<PointerId, Offset>()
@@ -995,7 +996,7 @@ private fun TouchOverlay(
         CursorLayer(state, layout, padEdge, joyR)
 
         if (!state.editMode) {
-            val play = state.mode == PlayMode.PLAY
+            val play = state.mode == PlayMode.PLAY || state.walkLatch
             Text(
                 if (play) "ХОДЬБА" else "ПАД",
                 color = Color(0x55FFFFFF),
@@ -1119,7 +1120,7 @@ private fun CursorLayer(state: OverlayState, layout: OverlayLayout, padEdge: Flo
             )
         }
 
-        if (state.mode == PlayMode.PLAY) {
+        if (state.mode == PlayMode.PLAY || state.walkLatch) {
             val base = if (state.joyActive) state.joyBase else Offset(size.width * 0.15f, size.height * 0.75f)
             val knob = if (state.joyActive) state.joyKnob else Offset.Zero
             drawCircle(Color(0x3300E5FF), joyR, base)
@@ -1183,6 +1184,9 @@ private fun SessionScreen() {
         ) {
             Chip(if (state.mode == PlayMode.PLAY) "Режим: Игра" else "Режим: Студия") {
                 state.mode = if (state.mode == PlayMode.PLAY) PlayMode.STUDIO else PlayMode.PLAY
+            }
+            Chip(if (state.walkLatch) "WASD вкл" else "WASD выкл") {
+                state.walkLatch = !state.walkLatch
             }
             Chip(if (state.editMode) "Готово" else "Раскладка") { state.editMode = !state.editMode }
             Chip(if (state.loupeOn) "Лупа вкл" else "Лупа выкл") { state.loupeOn = !state.loupeOn }
