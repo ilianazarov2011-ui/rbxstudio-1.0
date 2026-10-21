@@ -4,16 +4,18 @@ import android.content.Context
 import android.content.Intent
 import android.os.Environment
 import android.util.Log
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.lang.reflect.Proxy
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Мост к движку Winlator (пакет com.winlator), вшитому в это приложение.
- * Всё через отражение: если внутри движка что-то называется иначе,
- * код всё равно соберётся, а в лог попадёт понятная запись.
+ * Всё через отражение: имена методов движка не влияют на сборку,
+ * а в лог пишется понятный отчёт.
  */
 object Engine {
 
@@ -25,15 +27,17 @@ object Engine {
     private const val CLS_MAIN = "com.winlator.MainActivity"
 
     const val CONTAINER_NAME = "Studio"
+    private const val ENV_VARS = "DXVK_FRAME_RATE=30 BOX64_DYNAREC_BIGBLOCK=1"
 
     private val lines = ArrayList<String>()
     private var apiDumped = false
+    private val callbackCalls = AtomicInteger()
 
     @Synchronized
     fun log(s: String) {
         Log.i(TAG, s)
         lines.add(s)
-        if (lines.size > 5000) lines.subList(0, 1500).clear()
+        if (lines.size > 6000) lines.subList(0, 2000).clear()
     }
 
     @Synchronized
@@ -61,6 +65,8 @@ object Engine {
     private fun noop(type: Class<*>): Any = Proxy.newProxyInstance(
         Engine::class.java.classLoader, arrayOf(type)
     ) { _, m, _ ->
+        callbackCalls.incrementAndGet()
+        log("движок позвал колбэк: ${m.name}")
         when (m.returnType) {
             Boolean::class.javaPrimitiveType -> false
             Int::class.javaPrimitiveType -> 0
@@ -97,7 +103,7 @@ object Engine {
             f.set(obj, value.toString())
             log("  поле $field = $value")
         } catch (e: Throwable) {
-            log("! не удалось задать $field = $value")
+            log("  (нет ни $field-сеттера, ни поля — пропускаю)")
         }
     }
 
@@ -105,19 +111,26 @@ object Engine {
         if (apiDumped) return
         apiDumped = true
         log("=== АПИ ДВИЖКА ===")
-        for (n in listOf(CLS_MANAGER, CLS_CONTAINER, CLS_XSERVER, CLS_MAIN)) {
+        for (n in listOf(CLS_MANAGER, CLS_CONTAINER)) {
             try {
                 val c = Class.forName(n)
-                log("класс $n — есть")
-                log("  конструкторы: " + c.constructors.joinToString(" | ") { ct ->
-                    ct.parameterTypes.joinToString(",") { p -> p.simpleName }
-                })
-                log("  методы: " + c.methods.map { it.name }.distinct().sorted().joinToString(", "))
-            } catch (e: Throwable) {
-                log("класс $n — НЕТ")
-            }
+                log("--- $n ---")
+                val ms = c.methods.filter { it.declaringClass != Any::class.java }
+                for (m in ms.sortedBy { it.name }) {
+                    log("  ${m.name}(${m.parameterTypes.joinToString(", ") { it.simpleName }})")
+                }
+            } catch (e: Throwable) { log("$n — НЕТ") }
         }
         log("=== /АПИ ===")
+    }
+
+    fun dumpAssets(ctx: Context) {
+        for (dir in listOf("", "box64", "graphics_driver", "dxwrapper", "wincomponents")) {
+            try {
+                val l = ctx.assets.list(dir)?.sorted() ?: emptyList<String>()
+                log("assets/[$dir] = ${if (l.isEmpty()) "(пусто)" else l.joinToString(", ")}")
+            } catch (e: Throwable) { log("assets/[$dir] — ошибка") }
+        }
     }
 
     // ---------------------------------------------------------------- контейнер
@@ -138,13 +151,45 @@ object Engine {
         (call(container, "getId") as? Number)?.toInt() ?: -1
 
     fun containerDir(ctx: Context, cm: Any?, id: Int): File? {
-        val f = call(cm, "getContainerDir", id) as? File
-        if (f != null) return f
+        val c = call(cm, "getContainerById", id)
+        val root = call(c, "getRootDir") as? File
+        if (root != null) return root
         val guess = File(ctx.filesDir, "containers/$id")
         return if (guess.exists()) guess else null
     }
 
-    /** Находит контейнер "Studio", при отсутствии — создаёт его под настройки Mali. */
+    private fun applySettings(c: Any) {
+        setAny(c, CONTAINER_NAME, "setName", field = "name")
+        setAny(c, "1280x720", "setScreenSize", field = "screenSize")
+        setAny(c, "system", "setGraphicsDriver", field = "graphicsDriver")
+        setAny(c, "dxvk", "setDXWrapper", field = "dxwrapper")
+        setAny(c, "alsa", "setAudioDriver", field = "audioDriver")
+        setAny(c, ENV_VARS, "setEnvVars", field = "envVars")
+        call(c, "putExtra", "winVersion", "win10")
+        call(c, "putExtra", "videoMemorySize", "1024")
+        call(c, "putExtra", "box64Preset", "STABILITY")
+        call(c, "saveData")
+        log("настройки записаны")
+    }
+
+    private fun dumpContainer(c: Any) {
+        log("--- состояние контейнера ---")
+        for (m in listOf(
+            "getName", "getScreenSize", "getGraphicsDriver", "getGraphicsDriverConfig",
+            "getDXWrapper", "getAudioDriver", "getWineVersion", "getBox64Preset",
+            "getEnvVars", "getStartupSelection", "getHUDMode", "getWinComponents", "getDrives"
+        )) {
+            log("  $m = ${call(c, m)}")
+        }
+        val cf = call(c, "getConfigFile") as? File
+        if (cf != null && cf.exists()) {
+            log("--- файл ${cf.name} ---")
+            log(cf.readText())
+            log("--- /файл ---")
+        }
+    }
+
+    /** Находит контейнер "Studio", при отсутствии — создаёт его. */
     fun ensureStudioContainer(ctx: Context, cm: Any): Any? {
         val list = call(cm, "getContainers") as? List<*> ?: emptyList<Any?>()
         log("контейнеров в движке: ${list.size}")
@@ -154,40 +199,60 @@ object Engine {
             if (n == CONTAINER_NAME) { log("нашёл готовый контейнер \"$CONTAINER_NAME\""); return c }
         }
 
-        log("создаю контейнер \"$CONTAINER_NAME\" под Mali (System + DXVK)...")
-        var id = (call(cm, "getNextContainerId") as? Number)?.toInt() ?: -1
-        if (id < 0) id = (list.mapNotNull { containerId(it).takeIf { i -> i >= 0 } }.maxOrNull() ?: 0) + 1
+        log("создаю контейнер \"$CONTAINER_NAME\"...")
+        val data = JSONObject()
+        data.put("name", CONTAINER_NAME)
+        data.put("screenSize", "1280x720")
+        data.put("graphicsDriver", "system")
+        data.put("graphicsDriverConfig", "")
+        data.put("dxwrapper", "dxvk")
+        data.put("dxwrapperConfig", "")
+        data.put("audioDriver", "alsa")
+        data.put("audioDriverConfig", "")
+        data.put("winVersion", "win10")
+        data.put("wineVersion", "")
+        data.put("box64Version", "")
+        data.put("box64Preset", "STABILITY")
+        data.put("envVars", ENV_VARS)
+        data.put("cpuList", "")
+        data.put("cpuListWoW64", "")
+        data.put("videoMemorySize", "1024")
+        data.put("startupSelection", "normal")
+        data.put("hudMode", "1")
+        data.put("desktopTheme", "")
+        data.put("winComponents", "")
+        data.put("drives", "")
 
-        val container = try {
-            Class.forName(CLS_CONTAINER).getConstructor(Int::class.javaPrimitiveType).newInstance(id)
-        } catch (e: Throwable) {
-            try { Class.forName(CLS_CONTAINER).getConstructor(Int::class.java).newInstance(id) }
-            catch (e2: Throwable) { log("! Container($id): $e2"); return null }
-        }
+        log("вызываю createContainerAsync(JSONObject)...")
+        call(cm, "createContainerAsync", data, null)
 
-        setAny(container, CONTAINER_NAME, "setName", field = "name")
-        setAny(container, "1280x720", "setScreenSize", field = "screenSize")
-        setAny(container, "system", "setGraphicsDriver", field = "graphicsDriver")
-        setAny(container, "dxvk", "setDXWrapper", "setDxwrapper", field = "dxwrapper")
-        setAny(container, "win10", "setWinVersion", field = "winVersion")
-        setAny(container, "1024", "setVideoMemorySize", field = "videoMemorySize")
-        setAny(container, "DXVK_FRAME_RATE=30 BOX64_DYNAREC_BIGBLOCK=1", "setEnvVars", field = "envVars")
-
-        log("вызываю createContainerAsync...")
-        call(cm, "createContainerAsync", container, null)
-
-        log("жду распаковку контейнера (до 5 минут)...")
+        log("жду появления контейнера (до 6 минут)...")
         val t0 = System.currentTimeMillis()
-        while (System.currentTimeMillis() - t0 < 300_000) {
+        var container: Any? = null
+        while (System.currentTimeMillis() - t0 < 360_000) {
             Thread.sleep(3000)
-            val dir = containerDir(ctx, cm, id)
-            if (dir != null && File(dir, ".container").exists()) {
-                log("контейнер готов: ${dir.absolutePath}")
-                return call(cm, "getContainerById", id) ?: container
-            }
+            val now = call(cm, "getContainers") as? List<*> ?: emptyList<Any?>()
+            val found = now.firstOrNull { (call(it, "getName") as? String) == CONTAINER_NAME }
+            if (found != null) { container = found; break }
         }
-        log("! контейнер не появился за 5 минут")
-        return call(cm, "getContainerById", id)
+        if (container == null) { log("! контейнер не появился за 6 минут"); return null }
+        log("контейнер создан: #${containerId(container)}")
+
+        applySettings(container)
+
+        val root = call(container, "getRootDir") as? File
+        log("папка контейнера: ${root?.absolutePath}")
+        if (root != null) {
+            val t1 = System.currentTimeMillis()
+            while (System.currentTimeMillis() - t1 < 360_000) {
+                if (root.listFiles()?.any { it.isDirectory } == true) break
+                Thread.sleep(3000)
+            }
+            Thread.sleep(5000)
+            log("в папке: " + (root.listFiles()?.joinToString { it.name } ?: "пусто"))
+        }
+        dumpContainer(container)
+        return container
     }
 
     fun launchContainer(ctx: Context, container: Any, execArgs: String?) {
@@ -196,7 +261,7 @@ object Engine {
             call(container, "saveData")
         }
         val id = containerId(container)
-        log("запускаю контейнер #$id с командой: ${execArgs ?: "по умолчанию"}")
+        log("запускаю контейнер #$id, команда: ${execArgs ?: "по умолчанию"}")
         val i = Intent().setClassName(ctx, CLS_XSERVER)
         i.putExtra("container_id", id)
         ctx.startActivity(i)
