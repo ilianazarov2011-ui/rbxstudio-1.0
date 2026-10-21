@@ -46,11 +46,13 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -242,18 +244,18 @@ object DeviceProbe {
                 notes += "Меньше 4 ГБ RAM - Studio будет уходить в своп."
             }
             ramMb < 6144 -> {
-                score -= 20
+                score -= 15
                 notes += "4-6 ГБ RAM. Только лёгкие места и низкие настройки."
             }
             ramMb < 8192 -> {
-                score -= 8
+                score -= 6
                 notes += "6-8 ГБ RAM. Пойдёт, но впритык."
             }
         }
 
-        if (freeMb < 8000) {
-            score -= 20
-            notes += "Меньше 8 ГБ свободно. Префикс со Studio не влезет."
+        if (freeMb < 6000) {
+            score -= 15
+            notes += "Меньше 6 ГБ свободно. Нужно место под префикс со Studio."
         }
 
         if (!Build.SUPPORTED_ABIS.contains("arm64-v8a")) {
@@ -498,6 +500,21 @@ object Presets {
         baseWine,
     )
 
+    val mali = RuntimePreset(
+        "mali", "Mali (твой чип)", 0.5f, 30,
+        baseBox64 + mapOf(
+            "BOX64_DYNAREC_BIGBLOCK" to "1",
+            "BOX64_DYNAREC_FORWARD" to "256",
+            "BOX64_DYNAREC_STRONGMEM" to "1",
+        ),
+        baseDxvk + mapOf(
+            "dxvk.numCompilerThreads" to "1",
+            "dxvk.maxFrameLatency" to "2",
+            "dxvk.enableGraphicsPipelineLibrary" to "False",
+        ),
+        baseWine + mapOf("DXVK_FRAME_RATE" to "30"),
+    )
+
     val performance = RuntimePreset(
         "performance", "Производительность", 1.0f, 60,
         baseBox64 + mapOf(
@@ -510,12 +527,12 @@ object Presets {
         baseWine,
     )
 
-    val all = listOf(battery, balanced, performance)
+    val all = listOf(mali, battery, balanced, performance)
 }
 
 @Composable
 private fun PresetsScreen() {
-    var selected by remember { mutableStateOf("balanced") }
+    var selected by remember { mutableStateOf("mali") }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
         Text("ПРЕСЕТ РАНТАЙМА", color = Color(0xFF6B7683), fontSize = 11.sp)
@@ -600,7 +617,7 @@ data class OverlayButton(
     val label: String,
     val x: Float,
     val y: Float,
-    val size: Float = 0.075f,
+    val size: Float = 0.10f,
     val isModifier: Boolean = false,
     val keyCode: Int = 0,
 )
@@ -616,17 +633,17 @@ data class OverlayLayout(
 )
 
 fun defaultButtons(): List<OverlayButton> = listOf(
-    OverlayButton("ctrl", "CTRL", 0.365f, 0.86f, isModifier = true),
-    OverlayButton("shift", "SHIFT", 0.445f, 0.86f, isModifier = true),
-    OverlayButton("alt", "ALT", 0.525f, 0.86f, isModifier = true),
-    OverlayButton("t1", "1", 0.605f, 0.86f, keyCode = 49),
-    OverlayButton("t2", "2", 0.670f, 0.86f, keyCode = 50),
-    OverlayButton("t3", "3", 0.735f, 0.86f, keyCode = 51),
-    OverlayButton("t4", "4", 0.800f, 0.86f, keyCode = 52),
-    OverlayButton("esc", "ESC", 0.868f, 0.86f, keyCode = 27),
-    OverlayButton("del", "DEL", 0.933f, 0.86f, keyCode = 127),
-    OverlayButton("focus", "F", 0.933f, 0.77f, keyCode = 70),
-    OverlayButton("undo", "Z", 0.868f, 0.77f, keyCode = 90),
+    OverlayButton("ctrl", "CTRL", 0.365f, 0.855f, isModifier = true),
+    OverlayButton("shift", "SHIFT", 0.445f, 0.855f, isModifier = true),
+    OverlayButton("alt", "ALT", 0.525f, 0.855f, isModifier = true),
+    OverlayButton("t1", "1", 0.605f, 0.855f, keyCode = 49),
+    OverlayButton("t2", "2", 0.672f, 0.855f, keyCode = 50),
+    OverlayButton("t3", "3", 0.739f, 0.855f, keyCode = 51),
+    OverlayButton("t4", "4", 0.806f, 0.855f, keyCode = 52),
+    OverlayButton("esc", "ESC", 0.873f, 0.855f, keyCode = 27),
+    OverlayButton("del", "DEL", 0.940f, 0.855f, keyCode = 127),
+    OverlayButton("focus", "F", 0.940f, 0.745f, keyCode = 70),
+    OverlayButton("undo", "Z", 0.873f, 0.745f, keyCode = 90),
 )
 
 enum class Latch { OFF, ONCE, LOCKED }
@@ -636,6 +653,7 @@ class OverlayState {
     var editMode by mutableStateOf(false)
     var loupeOn by mutableStateOf(true)
     var fineAim by mutableStateOf(false)
+    var cameraActive by mutableStateOf(false)
     var lastEvent by mutableStateOf("")
 
     var ctrl by mutableStateOf(Latch.OFF)
@@ -678,10 +696,16 @@ private fun TouchOverlay(
         val padEdge = w * layout.padZoneWidth
         val offsetY = if (layout.offsetCursor) 52f else 0f
 
+        LaunchedEffect(w, h) {
+            if (state.cursor == Offset.Zero) {
+                state.cursor = Offset(w * 0.5f, h * 0.5f)
+            }
+        }
+
         Box(
             Modifier
                 .fillMaxSize()
-                .pointerInput(layout, state.editMode) {
+                .pointerInput(state.editMode) {
                     if (state.editMode) return@pointerInput
                     awaitPointerEventScope {
                         val roles = HashMap<PointerId, Role>()
@@ -709,7 +733,10 @@ private fun TouchOverlay(
                                     startPos[ch.id] = pos
                                     lastPos[ch.id] = pos
                                     startTime[ch.id] = System.currentTimeMillis()
-                                    if (role == Role.CAMERA) sink.button(MouseButton.RIGHT, true)
+                                    if (role == Role.CAMERA) {
+                                        sink.button(MouseButton.RIGHT, true)
+                                        state.cameraActive = true
+                                    }
                                     if (role == Role.PAD) {
                                         state.cursor = pos.copy(y = pos.y - offsetY)
                                     }
@@ -779,7 +806,12 @@ private fun TouchOverlay(
                                     lastTapAt = now
                                     lastTapPos = ch.position
                                 }
-                                if (role == Role.CAMERA) sink.button(MouseButton.RIGHT, false)
+                                if (role == Role.CAMERA) {
+                                    sink.button(MouseButton.RIGHT, false)
+                                    if (roles.values.none { it == Role.CAMERA }) {
+                                        state.cameraActive = false
+                                    }
+                                }
 
                                 startPos.remove(ch.id)
                                 lastPos.remove(ch.id)
@@ -813,7 +845,26 @@ private fun TouchOverlay(
             }
         }
 
-        CursorLayer(state, layout)
+        CursorLayer(state, layout, padEdge)
+
+        Text(
+            "ПАД",
+            color = Color(0x55FFFFFF),
+            fontSize = 10.sp,
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 10.dp, bottom = 6.dp),
+        )
+        Text(
+            if (state.cameraActive) "КАМЕРА (тяни)" else "КАМЕРА",
+            color = if (state.cameraActive) Color(0xCCFFB300) else Color(0x44FFFFFF),
+            fontSize = 10.sp,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp),
+        )
+        Text(
+            "левая зона - курсор, правая - камера",
+            color = Color(0x33FFFFFF),
+            fontSize = 10.sp,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 6.dp),
+        )
     }
 }
 
@@ -827,12 +878,18 @@ private fun OverlayButtonView(
     onMoved: (Float, Float) -> Unit,
 ) {
     val density = LocalDensity.current
-    val sizeDp = with(density) { (containerW * btn.size).toDp() }
+    val base = minOf(containerW, containerH)
+    val sizeDp = with(density) { (base * btn.size).toDp() }
     val baseX = with(density) { (containerW * btn.x).toDp() }
     val baseY = with(density) { (containerH * btn.y).toDp() }
 
     var dx by remember { mutableFloatStateOf(0f) }
     var dy by remember { mutableFloatStateOf(0f) }
+
+    // живые значения, иначе обработчик замораживает старую раскладку
+    val curX by rememberUpdatedState(btn.x)
+    val curY by rememberUpdatedState(btn.y)
+    val curOnMoved by rememberUpdatedState(onMoved)
 
     val latch = when (btn.id) {
         "ctrl" -> state.ctrl
@@ -850,19 +907,23 @@ private fun OverlayButtonView(
                 when {
                     latch == Latch.LOCKED -> Color(0xCC00E5FF)
                     latch == Latch.ONCE -> Color(0x99FFB300)
-                    else -> Color(0x66000000)
+                    else -> Color(0x77000000)
                 },
             )
-            .border(1.dp, Color(0x55FFFFFF), CircleShape)
+            .border(1.dp, Color(0x66FFFFFF), CircleShape)
             .pointerInput(btn.id, state.editMode) {
                 if (state.editMode) {
                     detectDragGestures(
                         onDrag = { _, drag -> dx += drag.x; dy += drag.y },
                         onDragEnd = {
-                            onMoved(
-                                (containerW * btn.x + dx) / containerW,
-                                (containerH * btn.y + dy) / containerH,
+                            curOnMoved(
+                                (curX + dx / containerW).coerceIn(0.01f, 0.97f),
+                                (curY + dy / containerH).coerceIn(0.02f, 0.96f),
                             )
+                            dx = 0f
+                            dy = 0f
+                        },
+                        onDragCancel = {
                             dx = 0f
                             dy = 0f
                         },
@@ -896,14 +957,24 @@ private fun OverlayButtonView(
 }
 
 @Composable
-private fun CursorLayer(state: OverlayState, layout: OverlayLayout) {
+private fun CursorLayer(state: OverlayState, layout: OverlayLayout, padEdge: Float) {
     Canvas(Modifier.fillMaxSize()) {
         val c = state.cursor
-        if (c == Offset.Zero) return@Canvas
 
-        drawCircle(Color(0x4400E5FF), radius = 26f, center = c, style = Stroke(2f))
-        drawLine(Color(0xAA00E5FF), c - Offset(14f, 0f), c + Offset(14f, 0f), 2f)
-        drawLine(Color(0xAA00E5FF), c - Offset(0f, 14f), c + Offset(0f, 14f), 2f)
+        drawLine(Color(0x22FFFFFF), Offset(padEdge, 0f), Offset(padEdge, size.height), 2f)
+
+        if (state.cameraActive) {
+            drawRect(
+                color = Color(0x22FFB300),
+                topLeft = Offset(padEdge, 0f),
+                size = Size(size.width - padEdge, size.height),
+            )
+        }
+
+        drawCircle(Color(0x6600E5FF), radius = 30f, center = c, style = Stroke(2f))
+        drawCircle(Color(0xAA00E5FF), radius = 3f, center = c)
+        drawLine(Color(0xCC00E5FF), c - Offset(16f, 0f), c + Offset(16f, 0f), 2f)
+        drawLine(Color(0xCC00E5FF), c - Offset(0f, 16f), c + Offset(0f, 16f), 2f)
 
         if (state.loupeOn && layout.loupeEnabled) {
             val r = 78f
@@ -954,6 +1025,9 @@ private fun SessionScreen() {
             Chip(if (state.editMode) "Готово" else "Раскладка") { state.editMode = !state.editMode }
             Chip(if (state.loupeOn) "Лупа вкл" else "Лупа выкл") { state.loupeOn = !state.loupeOn }
             Chip(if (state.fineAim) "Точно" else "Быстро") { state.fineAim = !state.fineAim }
+            Chip("Сброс") {
+                layout = layout.copy(buttons = defaultButtons())
+            }
         }
     }
 }
