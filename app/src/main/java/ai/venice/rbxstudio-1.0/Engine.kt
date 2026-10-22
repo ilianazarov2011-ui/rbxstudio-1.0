@@ -3,6 +3,8 @@ package ai.venice.rbxstudio
 import android.content.Context
 import android.content.Intent
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
@@ -14,8 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Мост к движку Winlator (пакет com.winlator), вшитому в это приложение.
- * Всё через отражение: имена методов движка не влияют на сборку,
- * а в лог пишется понятный отчёт.
+ * Всё через отражение: имена методов движка не влияют на сборку.
  */
 object Engine {
 
@@ -33,11 +34,14 @@ object Engine {
     private var apiDumped = false
     private val callbackCalls = AtomicInteger()
 
+    /** Движок требует Handler -> вызывать его надо с главного потока. */
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     @Synchronized
     fun log(s: String) {
         Log.i(TAG, s)
         lines.add(s)
-        if (lines.size > 6000) lines.subList(0, 2000).clear()
+        if (lines.size > 8000) lines.subList(0, 3000).clear()
     }
 
     @Synchronized
@@ -53,6 +57,8 @@ object Engine {
         return when (type) {
             Int::class.javaPrimitiveType -> (value as? Number)?.toInt() ?: 0
             Long::class.javaPrimitiveType -> (value as? Number)?.toLong() ?: 0L
+            Short::class.javaPrimitiveType -> (value as? Number)?.toShort() ?: 0
+            Byte::class.javaPrimitiveType -> (value as? Number)?.toByte() ?: 0
             Float::class.javaPrimitiveType -> (value as? Number)?.toFloat() ?: 0f
             Double::class.javaPrimitiveType -> (value as? Number)?.toDouble() ?: 0.0
             Boolean::class.javaPrimitiveType -> value as? Boolean ?: false
@@ -115,8 +121,7 @@ object Engine {
             try {
                 val c = Class.forName(n)
                 log("--- $n ---")
-                val ms = c.methods.filter { it.declaringClass != Any::class.java }
-                for (m in ms.sortedBy { it.name }) {
+                for (m in c.methods.filter { it.declaringClass != Any::class.java }.sortedBy { it.name }) {
                     log("  ${m.name}(${m.parameterTypes.joinToString(", ") { it.simpleName }})")
                 }
             } catch (e: Throwable) { log("$n — НЕТ") }
@@ -127,7 +132,7 @@ object Engine {
     fun dumpAssets(ctx: Context) {
         for (dir in listOf("", "box64", "graphics_driver", "dxwrapper", "wincomponents")) {
             try {
-                val l = ctx.assets.list(dir)?.sorted() ?: emptyList<String>()
+                val l = ctx.assets.list(dir)?.sorted() ?: emptyList()
                 log("assets/[$dir] = ${if (l.isEmpty()) "(пусто)" else l.joinToString(", ")}")
             } catch (e: Throwable) { log("assets/[$dir] — ошибка") }
         }
@@ -147,13 +152,24 @@ object Engine {
         }
     }
 
-    fun containerId(container: Any?): Int =
-        (call(container, "getId") as? Number)?.toInt() ?: -1
+    /** У Container нет getId — берём id из публичного поля или из имени папки. */
+    fun containerId(container: Any?): Int {
+        if (container == null) return -1
+        val cls = container.javaClass
+        if (cls.methods.any { it.name == "getId" })
+            return (call(container, "getId") as? Number)?.toInt() ?: -1
+        try {
+            val f = cls.getDeclaredField("id")
+            f.isAccessible = true
+            (f.get(container) as? Number)?.let { return it.toInt() }
+        } catch (e: Throwable) { }
+        val root = call(container, "getRootDir") as? File
+        return root?.name?.toIntOrNull() ?: -1
+    }
 
     fun containerDir(ctx: Context, cm: Any?, id: Int): File? {
         val c = call(cm, "getContainerById", id)
-        val root = call(c, "getRootDir") as? File
-        if (root != null) return root
+        (call(c, "getRootDir") as? File)?.let { return it }
         val guess = File(ctx.filesDir, "containers/$id")
         return if (guess.exists()) guess else null
     }
@@ -165,6 +181,7 @@ object Engine {
         setAny(c, "dxvk", "setDXWrapper", field = "dxwrapper")
         setAny(c, "alsa", "setAudioDriver", field = "audioDriver")
         setAny(c, ENV_VARS, "setEnvVars", field = "envVars")
+        call(c, "setStartupSelection", 0)
         call(c, "putExtra", "winVersion", "win10")
         call(c, "putExtra", "videoMemorySize", "1024")
         call(c, "putExtra", "box64Preset", "STABILITY")
@@ -176,10 +193,14 @@ object Engine {
         log("--- состояние контейнера ---")
         for (m in listOf(
             "getName", "getScreenSize", "getGraphicsDriver", "getGraphicsDriverConfig",
-            "getDXWrapper", "getAudioDriver", "getWineVersion", "getBox64Preset",
-            "getEnvVars", "getStartupSelection", "getHUDMode", "getWinComponents", "getDrives"
+            "getDXWrapper", "getDXWrapperConfig", "getAudioDriver", "getWineVersion",
+            "getBox64Preset", "getEnvVars", "getStartupSelection", "getHUDMode",
+            "getWinComponents", "getDrives", "getRootDir"
         )) {
             log("  $m = ${call(c, m)}")
+        }
+        for (k in listOf("winVersion", "videoMemorySize", "box64Version", "desktopTheme")) {
+            log("  extra[$k] = ${call(c, "getExtra", k, "нет")}")
         }
         val cf = call(c, "getConfigFile") as? File
         if (cf != null && cf.exists()) {
@@ -191,6 +212,8 @@ object Engine {
 
     /** Находит контейнер "Studio", при отсутствии — создаёт его. */
     fun ensureStudioContainer(ctx: Context, cm: Any): Any? {
+        dumpAssets(ctx)
+
         val list = call(cm, "getContainers") as? List<*> ?: emptyList<Any?>()
         log("контейнеров в движке: ${list.size}")
         for (c in list) {
@@ -217,14 +240,14 @@ object Engine {
         data.put("cpuList", "")
         data.put("cpuListWoW64", "")
         data.put("videoMemorySize", "1024")
-        data.put("startupSelection", "normal")
-        data.put("hudMode", "1")
+        data.put("startupSelection", 0)
+        data.put("hudMode", 1)
         data.put("desktopTheme", "")
         data.put("winComponents", "")
         data.put("drives", "")
 
-        log("вызываю createContainerAsync(JSONObject)...")
-        call(cm, "createContainerAsync", data, null)
+        log("вызываю createContainerAsync с главного потока...")
+        mainHandler.post { call(cm, "createContainerAsync", data, null) }
 
         log("жду появления контейнера (до 6 минут)...")
         val t0 = System.currentTimeMillis()
@@ -297,14 +320,6 @@ object Engine {
         return "C:\\" + rel.substring(i + key.length).replace('/', '\\')
     }
 
-    fun fetchVersionGuid(): String? {
-        log("спрашиваю версию Студии у Roblox...")
-        val text = httpText("https://setup.rbxcdn.com/versionStudio") ?: return null
-        val guid = text.trim().removePrefix("version-").trim()
-        log("версия: $guid")
-        return if (guid.isNotEmpty()) guid else null
-    }
-
     private fun httpText(url: String): String? = try {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 20000
@@ -315,17 +330,79 @@ object Engine {
         log("! $url -> $e"); null
     }
 
+    /** Пробует адрес и возвращает длину файла (или -1). */
+    private fun probe(url: String): Long = try {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 15000
+        c.readTimeout = 15000
+        c.setRequestProperty("Range", "bytes=0-0")
+        val code = c.responseCode
+        val len = c.contentLengthLong
+        c.disconnect()
+        log("  проба [$code] $url")
+        if (code == 200 || code == 206) len else -1L
+    } catch (e: Throwable) {
+        log("  проба [--] $url ($e)"); -1L
+    }
+
+    fun fetchVersionGuid(): String? {
+        var guid: String? = null
+        httpText("https://clientsettingscdn.roblox.com/v1/client-version/WindowsStudio64")?.let { t ->
+            log("clientsettings -> ${t.take(300)}")
+            Regex("\"clientVersionUpload\"\\s*:\\s*\"([^\"]+)\"").find(t)
+                ?.groupValues?.get(1)?.removePrefix("version-")?.let { guid = it }
+        }
+        if (guid == null) {
+            httpText("https://setup.rbxcdn.com/versionStudio")?.let { t ->
+                log("versionStudio -> ${t.trim()}")
+                t.trim().removePrefix("version-").trim().takeIf { it.isNotEmpty() }?.let { guid = it }
+            }
+        }
+        log("версия: ${guid ?: "не определилась"}")
+        return guid
+    }
+
+    /** Ищет уже скачанный установщик в «Загрузках». */
+    private fun findExistingInstaller(): File? {
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val f = dir.listFiles()?.firstOrNull {
+            it.isFile && it.name.contains("RobloxStudio", true) && it.name.endsWith(".exe", true)
+        }
+        if (f != null) log("нашёл готовый установщик: ${f.absolutePath} (${f.length() / 1024 / 1024} МБ)")
+        return f
+    }
+
     fun downloadInstaller(guid: String, onProgress: (Int) -> Unit): File? {
-        val url = "https://setup.rbxcdn.com/version-$guid-RobloxStudioInstaller.exe"
+        findExistingInstaller()?.let { return it }
+
+        val candidates = mutableListOf<String>()
+        for (n in listOf("RobloxStudioInstaller.exe", "RobloxStudioLauncherBeta.exe")) {
+            candidates.add("https://setup.rbxcdn.com/version-$guid-$n")
+            candidates.add("https://setup.rbxcdn.com/version-$guid/$n")
+        }
+        candidates.add("https://setup.rbxcdn.com/$guid-RobloxStudioInstaller.exe")
+
+        log("перебираю адреса установщика...")
+        for (u in candidates) {
+            if (probe(u) > 0) {
+                val name = u.substringAfterLast('/')
+                return downloadTo(u, name, onProgress)
+            }
+        }
+        log("! ни один адрес не подошёл")
+        return null
+    }
+
+    private fun downloadTo(url: String, name: String, onProgress: (Int) -> Unit): File? {
         val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         if (!dir.exists()) dir.mkdirs()
-        val out = File(dir, "version-$guid-RobloxStudioInstaller.exe")
-        log("качаю установщик: $url")
+        val out = File(dir, name)
+        log("качаю: $url")
         return try {
             val c = URL(url).openConnection() as HttpURLConnection
             c.connectTimeout = 20000
             c.readTimeout = 60000
-            val total = c.contentLength
+            val total = c.contentLengthLong
             c.inputStream.use { ins ->
                 FileOutputStream(out).use { fos ->
                     val buf = ByteArray(1 shl 16)
