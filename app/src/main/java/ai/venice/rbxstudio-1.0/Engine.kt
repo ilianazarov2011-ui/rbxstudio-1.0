@@ -33,7 +33,6 @@ object Engine {
     private val lines = ArrayList<String>()
     private var apiDumped = false
 
-    /** Движок создаёт Handler — значит вызывать его надо с главного потока. */
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile private var createdContainer: Any? = null
@@ -129,18 +128,11 @@ object Engine {
         log("=== /АПИ ===")
     }
 
-    private fun assetList(ctx: Context, dir: String): List<String> =
-        try { ctx.assets.list(dir)?.sorted() ?: emptyList() } catch (e: Throwable) { emptyList() }
-
     private fun assetText(ctx: Context, path: String): String? =
         try { ctx.assets.open(path).bufferedReader().use { it.readText() } } catch (e: Throwable) { null }
 
     fun dumpAssets(ctx: Context) {
-        for (dir in listOf("", "box64", "graphics_driver", "dxwrapper")) {
-            val l = assetList(ctx, dir)
-            log("assets/[$dir] = ${if (l.isEmpty()) "(пусто)" else l.joinToString(", ")}")
-        }
-        assetText(ctx, "box64/env_vars.json")?.let { log("box64/env_vars.json = ${it.take(2000)}") }
+        log("assets/[] = ${ctx.assets.list("")?.sorted()?.joinToString() ?: "?"}")
     }
 
     // ---------------------------------------------------------------- контейнер
@@ -157,7 +149,6 @@ object Engine {
         }
     }
 
-    /** У Container нет getId — берём id из поля или из имени папки. */
     fun containerId(container: Any?): Int {
         if (container == null) return -1
         val cls = container.javaClass
@@ -179,20 +170,13 @@ object Engine {
         return if (guess.exists()) guess else null
     }
 
-    private fun pickBox64Preset(ctx: Context): String? {
-        val txt = assetText(ctx, "box64/env_vars.json") ?: return null
-        val keys = Regex("\"([A-Za-z0-9_\\-]+)\"\\s*:").findAll(txt).map { it.groupValues[1] }.toList()
-        return keys.firstOrNull { it.contains("stab", true) } ?: keys.firstOrNull()
-    }
-
-    private fun applySettings(ctx: Context, c: Any) {
+    private fun applySettings(c: Any) {
         setAny(c, CONTAINER_NAME, "setName", field = "name")
         setAny(c, "1280x720", "setScreenSize", field = "screenSize")
         setAny(c, "system", "setGraphicsDriver", field = "graphicsDriver")
         setAny(c, DXVK, "setDXWrapper", field = "dxwrapper")
         setAny(c, "alsa", "setAudioDriver", field = "audioDriver")
         setAny(c, ENV_VARS, "setEnvVars", field = "envVars")
-        pickBox64Preset(ctx)?.let { setAny(c, it, "setBox64Preset", field = "box64Preset") }
         call(c, "setStartupSelection", 0)
         call(c, "putExtra", "winVersion", "win10")
         call(c, "putExtra", "videoMemorySize", "1024")
@@ -200,15 +184,29 @@ object Engine {
         log("настройки записаны")
     }
 
+    private fun tree(f: File, depth: Int, prefix: String = "") {
+        if (depth < 0) return
+        f.listFiles()?.take(30)?.forEach {
+            log("  $prefix${it.name}${if (it.isDirectory) "/" else ""}")
+            if (it.isDirectory && depth > 0) tree(it, depth - 1, "$prefix  ")
+        }
+    }
+
     private fun dumpContainer(c: Any) {
         log("--- состояние контейнера ---")
         for (m in listOf(
             "getName", "getScreenSize", "getGraphicsDriver", "getGraphicsDriverConfig",
-            "getDXWrapper", "getAudioDriver", "getWineVersion", "getBox64Preset",
-            "getEnvVars", "getStartupSelection", "getHUDMode", "getWinComponents", "getRootDir"
+            "getDXWrapper", "getDXWrapperConfig", "getAudioDriver", "getWineVersion",
+            "getBox64Preset", "getEnvVars", "getStartupSelection", "getHUDMode",
+            "getWinComponents", "getDrives", "getRootDir"
         )) log("  $m = ${call(c, m)}")
         for (k in listOf("winVersion", "videoMemorySize", "box64Version", "desktopTheme"))
             log("  extra[$k] = ${call(c, "getExtra", k, "нет")}")
+        val root = call(c, "getRootDir") as? File
+        if (root != null) {
+            log("--- дерево папки контейнера ---")
+            tree(root, 1)
+        }
         val cf = call(c, "getConfigFile") as? File
         if (cf != null && cf.exists()) {
             log("--- файл ${cf.name} ---")
@@ -226,7 +224,10 @@ object Engine {
         for (c in list) {
             val n = call(c, "getName") as? String
             log("  #${containerId(c)} \"$n\"")
-            if (n == CONTAINER_NAME) { log("нашёл готовый контейнер"); return c }
+            if (n == CONTAINER_NAME) {
+                log("нашёл готовый контейнер — проверяю настройки и полноту")
+                return finishContainer(ctx, c)
+            }
         }
 
         log("создаю контейнер \"$CONTAINER_NAME\"...")
@@ -234,7 +235,6 @@ object Engine {
         data.put("name", CONTAINER_NAME)
         data.put("screenSize", "1280x720")
 
-        // колбэк, в который движок вернёт готовый контейнер
         val m = cm.javaClass.methods.firstOrNull { it.name == "createContainerAsync" }
         val cbType = m?.parameterTypes?.getOrNull(1)
         val cb: Any? = if (cbType != null && cbType.isInterface) {
@@ -258,8 +258,7 @@ object Engine {
                 last = el
                 log("жду контейнер: ${el}с, в списке ${(call(cm, "getContainers") as? List<*>)?.size ?: "?"}, в папке ${containersDir.list()?.joinToString() ?: "нет"}")
             }
-            val c = createdContainer
-            if (c != null) { log("колбэк вернул контейнер #${containerId(c)}"); return finishContainer(ctx, c) }
+            createdContainer?.let { log("колбэк вернул контейнер #${containerId(it)}"); return finishContainer(ctx, it) }
             val found = (call(cm, "getContainers") as? List<*>)
                 ?.firstOrNull { (call(it, "getName") as? String) == CONTAINER_NAME }
             if (found != null) { log("контейнер найден в списке"); return finishContainer(ctx, found) }
@@ -269,7 +268,6 @@ object Engine {
     }
 
     private fun finishContainer(ctx: Context, container: Any): Any? {
-        applySettings(ctx, container)
         val root = call(container, "getRootDir") as? File
         log("папка контейнера: ${root?.absolutePath}")
         if (root != null) {
@@ -279,11 +277,10 @@ object Engine {
                 if (root.listFiles()?.any { it.isDirectory } == true) break
                 Thread.sleep(2000)
                 val el = (System.currentTimeMillis() - t) / 1000
-                if (el - last >= 10) { last = el; log("распаковка... ${el}с, содержимое: ${root.listFiles()?.joinToString { it.name }}") }
+                if (el - last >= 10) { last = el; log("распаковка... ${el}с: ${root.listFiles()?.joinToString { it.name }}") }
             }
-            Thread.sleep(5000)
-            log("в папке: " + (root.listFiles()?.joinToString { it.name } ?: "пусто"))
         }
+        applySettings(container)
         dumpContainer(container)
         return container
     }
@@ -295,6 +292,7 @@ object Engine {
         }
         val id = containerId(container)
         log("запускаю контейнер #$id, команда: ${execArgs ?: "по умолчанию"}")
+        if (id < 0) { call(manager(ctx), "activateContainer", container) }
         val i = Intent().setClassName(ctx, CLS_XSERVER)
         i.putExtra("container_id", id)
         ctx.startActivity(i)
@@ -340,7 +338,6 @@ object Engine {
         log("! $url -> $e"); null
     }
 
-    /** Проба адреса: 200/206 = живой. */
     private fun probe(url: String): Boolean = try {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 15000
@@ -383,7 +380,10 @@ object Engine {
         )
         log("перебираю адреса установщика...")
         for (u in urls) {
-            if (probe(u)) return downloadTo(u, u.substringAfterLast('/'), onProgress)
+            if (probe(u)) return downloadTo(u, u.substringAfterLast('/')) { p ->
+                onProgress(p)
+                if (p % 20 == 0) log("  скачано $p%")
+            }
         }
         log("! ни один адрес не подошёл")
         return null
